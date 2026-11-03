@@ -1,0 +1,140 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserAccount(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+             data.email is string && data.email.size() <= 200 &&
+             data.authProvider is string && data.authProvider in ['CHARACTER_AI', 'GOOGLE_EMAIL', 'APPLE_ID'] &&
+             data.caiLinkedUsername is string && data.caiLinkedUsername.size() <= 100 &&
+             data.activeCharacterId is string && data.activeCharacterId.size() >= 1 && data.activeCharacterId.size() <= 128 &&
+             data.defaultMuteWindowMs is int && data.defaultMuteWindowMs >= 300 && data.defaultMuteWindowMs <= 2200 &&
+             data.defaultSampleRateHz is int && data.defaultSampleRateHz in [24000, 44100, 48000] &&
+             data.defaultMonoChannel is bool &&
+             data.caiIntegrationEnabled is bool &&
+             data.whatsappIntegrationEnabled is bool &&
+             data.telegramIntegrationEnabled is bool &&
+             data.googleChatIntegrationEnabled is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidCharacterProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.characterId is string && data.characterId.size() >= 1 && data.characterId.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.handle is string && data.handle.size() >= 1 && data.handle.size() <= 100 &&
+             data.tagline is string && data.tagline.size() <= 200 &&
+             data.personaBio is string && data.personaBio.size() <= 1000 &&
+             data.greeting is string && data.greeting.size() <= 500 &&
+             data.voicePresetId is string && data.voicePresetId.size() >= 1 && data.voicePresetId.size() <= 64 &&
+             data.voiceProfileName is string && data.voiceProfileName.size() >= 1 && data.voiceProfileName.size() <= 120 &&
+             data.recommendedHoldoffMs is int && data.recommendedHoldoffMs >= 300 && data.recommendedHoldoffMs <= 2200 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'email', 'authProvider',
+                         'caiLinkedUsername', 'activeCharacterId', 'defaultMuteWindowMs',
+                         'defaultSampleRateHz', 'defaultMonoChannel',
+                         'caiIntegrationEnabled', 'whatsappIntegrationEnabled',
+                         'telegramIntegrationEnabled', 'googleChatIntegrationEnabled',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email', 'authProvider',
+                         'caiLinkedUsername', 'activeCharacterId', 'defaultMuteWindowMs',
+                         'defaultSampleRateHz', 'defaultMonoChannel',
+                         'caiIntegrationEnabled', 'whatsappIntegrationEnabled',
+                         'telegramIntegrationEnabled', 'googleChatIntegrationEnabled',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserAccount(incoming());
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserAccount(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'email', 'authProvider',
+                         'caiLinkedUsername', 'activeCharacterId', 'defaultMuteWindowMs',
+                         'defaultSampleRateHz', 'defaultMonoChannel',
+                         'caiIntegrationEnabled', 'whatsappIntegrationEnabled',
+                         'telegramIntegrationEnabled', 'googleChatIntegrationEnabled',
+                         'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /characterProfiles/{characterId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(characterId);
+        allow list: if isOwner(userId) && resource.data.userId == request.auth.uid;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(characterId) &&
+                         incoming().characterId == characterId &&
+                         incoming().keys().hasAll([
+                           'userId', 'characterId', 'name', 'handle', 'tagline',
+                           'personaBio', 'greeting', 'voicePresetId', 'voiceProfileName',
+                           'recommendedHoldoffMs', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'characterId', 'name', 'handle', 'tagline',
+                           'personaBio', 'greeting', 'voicePresetId', 'voiceProfileName',
+                           'recommendedHoldoffMs', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidCharacterProfile(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(characterId) &&
+                         isValidCharacterProfile(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().characterId == existing().characterId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'name', 'handle', 'tagline', 'personaBio', 'greeting',
+                           'voicePresetId', 'voiceProfileName', 'recommendedHoldoffMs',
+                           'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(characterId);
+      }
+    }
+  }
+}

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,24 +29,68 @@ import com.example.audio.VoiceCloningEngine
 import com.example.audio.VoiceNoteFormatSpec
 import com.example.audio.VoiceNoteIntentExporter
 import com.example.audio.VoiceQualityReport
+import com.example.data.cloud.CloudSyncRepository
+import com.example.data.cloud.GoogleAuthHelper
+import com.example.data.cloud.GoogleAuthOutcome
 import com.example.data.db.AppDatabase
 import com.example.data.db.VoiceTakeEntity
 import com.example.data.model.AVAILABLE_VOICES
+import com.example.data.model.AuthProvider
+import com.example.data.model.CaiLaunchMode
+import com.example.data.model.StudioPreferencesManager
+import com.example.data.model.StudioSettingsConfig
+import com.example.data.model.SyncedCharacterProfile
+import com.example.data.model.UserAccountState
 import com.example.data.model.VoiceGender
 import com.example.data.model.VoicePreset
+import com.example.data.model.defaultStarterCharacters
+import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-enum class StudioTab {
-    OPUS_TRIMMER, CAI_CALL, CLONING, HISTORY
+const val ROUTE_HOME_DASHBOARD = "home_dashboard"
+const val ROUTE_CAI_CALL = "cai_call"
+const val ROUTE_RECORDING_STUDIO = "recording_studio"
+const val ROUTE_ACCOUNT_SYNC = "account_sync"
+const val ROUTE_VOICE_CLONING = "voice_cloning"
+const val ROUTE_HISTORY = "history"
+const val ROUTE_SETTINGS = "settings"
+
+enum class StudioTab(val route: String, val title: String, val subtitle: String) {
+    HOME_DASHBOARD(ROUTE_HOME_DASHBOARD, "Home Dashboard", "48kHz Chime-Blocker, Recording Studio & c.ai Sync"),
+    CAI_CALL(ROUTE_CAI_CALL, "c.ai Call Bridge", "Zero-Chime Live Call & Native App Bridge"),
+    OPUS_TRIMMER(ROUTE_RECORDING_STUDIO, "Recording Studio", "48kHz Mono Recorder, Waveform Trimmer & PTT Export"),
+    ACCOUNT_SYNC(ROUTE_ACCOUNT_SYNC, "Account & c.ai Sync", "Google, Apple ID & Character.AI Cloud Sync"),
+    CLONING(ROUTE_VOICE_CLONING, "Voice Clone Lab", "Custom 48kHz Character Voice Timbre Cloning"),
+    HISTORY(ROUTE_HISTORY, "Saved Takes Library", "Recorded Calls & Exported Voice Notes"),
+    SETTINGS(ROUTE_SETTINGS, "Studio Settings", "Audio Configuration, Integrations & Account")
+}
+
+enum class CaiCallSection(val label: String) {
+    LIVE_DECK("Live Call Deck"),
+    CHIME_DSP("Chime Blocker DSP"),
+    CHARACTER_VOICE("Character & Voice")
+}
+
+enum class VoiceStudioSection(val label: String) {
+    RECORD_IMPORT("1. Record & Import"),
+    WAVEFORM_TRIM("2. Waveform & Trim"),
+    FORMAT_EXPORT("3. Format & Export")
 }
 
 data class CharacterCallState(
@@ -59,18 +104,22 @@ data class CharacterCallState(
     val postSpeechMuteWindowMs: Int = 950,
     val spectralNotchEnabled: Boolean = true,
     val telephonyBandpassEnabled: Boolean = true,
-    val characterName: String = "Aria (c.ai Persona)",
-    val characterPersona: String = "Witty, empathetic companion speaking naturally on a phone call without robotic pauses",
+    val characterName: String = "Aria Vance (@aria_vance)",
+    val characterPersona: String = "Witty, warm, and observant confidante who speaks naturally on live phone calls with relaxed pacing and zero robotic pauses.",
+    val characterHandle: String = "@aria_vance",
+    val characterVoiceLabel: String = "Aoede Velvet (48kHz c.ai Voice)",
     val lastCallerStatement: String = "",
     val lastCharacterReply: String = "Hey! I'm on the line—go ahead and put me on speaker, zero chimes enabled.",
-    val callStatusText: String = "Chime-Blocker Armed • 48kHz Mono Call Bridge"
+    val callStatusText: String = "Chime-Blocker Armed • Native c.ai App Bridge Ready"
 )
 
 data class StudioUiState(
-    val activeTab: StudioTab = StudioTab.OPUS_TRIMMER,
+    val activeTab: StudioTab = StudioTab.HOME_DASHBOARD,
+    val activeCallSection: CaiCallSection = CaiCallSection.LIVE_DECK,
+    val activeStudioSection: VoiceStudioSection = VoiceStudioSection.RECORD_IMPORT,
     val scriptText: String = "",
     val stylePrompt: String = "Warm, expressive phone call voice with natural pauses",
-    val selectedVoice: VoicePreset = AVAILABLE_VOICES.first { it.id == "Puck" },
+    val selectedVoice: VoicePreset = AVAILABLE_VOICES.first { it.id == "Aoede" },
     val speed: Float = 1.0f,
     val pitch: Float = 1.0f,
     val isSynthesizing: Boolean = false,
@@ -79,8 +128,12 @@ data class StudioUiState(
 )
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
+    private val TAG = "StudioViewModel"
     private val database = AppDatabase.getDatabase(application)
     private val takeDao = database.voiceTakeDao()
+    private val prefsManager = StudioPreferencesManager(application)
+    private val cloudSyncRepository = CloudSyncRepository(application)
+    private val firebaseAuth: FirebaseAuth = Firebase.auth
 
     val audioPlayer = StudioAudioPlayer(application)
     val synthesizer = GeminiSpeechSynthesizer(application)
@@ -89,6 +142,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isDarkMode = MutableStateFlow(true)
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    // Persistent Settings & Account Sync State
+    private val _settingsConfig = MutableStateFlow(prefsManager.loadSettings())
+    val settingsConfig: StateFlow<StudioSettingsConfig> = _settingsConfig.asStateFlow()
+
+    private val _accountState = MutableStateFlow(prefsManager.loadAccountState())
+    val accountState: StateFlow<UserAccountState> = _accountState.asStateFlow()
+
+    private var cloudAccountJob: Job? = null
+    private var cloudCharactersJob: Job? = null
+    private var activeCloudUid: String? = null
+
+    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
+        val user = auth.currentUser
+        if (user != null) {
+            onFirebaseUserAuthenticated(user)
+        } else {
+            stopCloudObservation()
+        }
+    }
 
     // OpusVoice Studio Trimmer & Formatter State
     private val _loadedOpusAudio = MutableStateFlow<LoadedAudioBuffer?>(null)
@@ -148,6 +221,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     val selectedCloneSampleUri: StateFlow<Uri?> = _selectedCloneSampleUri.asStateFlow()
 
     init {
+        applySettingsToEngines(_settingsConfig.value)
+        applySyncedCharacterToCallAndStudio(_accountState.value.activeCharacter, showToast = false)
+
+        firebaseAuth.addAuthStateListener(authStateListener)
+
         viewModelScope.launch {
             val demoAudio = opusAudioEngine.createInitialDemoAudio()
             _loadedOpusAudio.value = demoAudio
@@ -163,6 +241,535 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun onFirebaseUserAuthenticated(user: FirebaseUser) {
+        if (activeCloudUid == user.uid && cloudAccountJob != null) return
+        stopCloudObservation()
+        activeCloudUid = user.uid
+
+        val currentAcct = _accountState.value
+        val resolvedName = user.displayName?.takeIf { it.isNotBlank() }
+            ?: currentAcct.displayName.takeIf { it.isNotBlank() }
+            ?: user.email?.substringBefore("@")
+            ?: "Studio Creator"
+        val resolvedEmail = user.email?.takeIf { it.isNotBlank() }
+            ?: currentAcct.emailOrUsername
+        val resolvedCaiHandle = currentAcct.caiLinkedUsername.ifBlank {
+            "@" + resolvedName.lowercase(Locale.US).replace(Regex("[^a-z0-9_]"), "_")
+        }
+        val timestamp = SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date())
+
+        val signedInState = currentAcct.copy(
+            isSignedIn = true,
+            firebaseUid = user.uid,
+            displayName = resolvedName,
+            emailOrUsername = resolvedEmail,
+            caiLinkedUsername = resolvedCaiHandle,
+            lastSyncTimestamp = timestamp,
+            cloudSyncStatus = "Connected to Firebase Cloud (${user.email ?: user.uid.take(8)})",
+            authErrorMessage = null
+        )
+        _accountState.value = signedInState
+        prefsManager.saveAccountState(signedInState)
+
+        // Start observing Firestore documents strictly after FirebaseAuth user is non-null
+        cloudAccountJob = viewModelScope.launch {
+            // Seed or pull cloud user document
+            val existingDoc = cloudSyncRepository.getUserAccount(user.uid).getOrNull()
+            if (existingDoc == null) {
+                cloudSyncRepository.upsertUserAccountAndSettings(
+                    userId = user.uid,
+                    accountState = _accountState.value,
+                    settings = _settingsConfig.value
+                )
+                _accountState.value.syncedCharacters.forEach { profile ->
+                    cloudSyncRepository.upsertCharacterProfile(user.uid, profile)
+                }
+            }
+
+            cloudSyncRepository.observeUserAccount(user.uid)
+                .catch { e ->
+                    Log.w(TAG, "Error observing cloud user account", e)
+                }
+                .collect { cloudDoc ->
+                    if (cloudDoc != null) {
+                        val providerEnum = AuthProvider.entries.firstOrNull { it.name == cloudDoc.authProvider }
+                            ?: _accountState.value.provider
+                        val syncTime = SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date())
+                        val updatedAcct = _accountState.value.copy(
+                            isSignedIn = true,
+                            firebaseUid = user.uid,
+                            provider = providerEnum,
+                            displayName = cloudDoc.displayName.ifBlank { _accountState.value.displayName },
+                            emailOrUsername = cloudDoc.email.ifBlank { _accountState.value.emailOrUsername },
+                            caiLinkedUsername = cloudDoc.caiLinkedUsername.ifBlank { _accountState.value.caiLinkedUsername },
+                            activeCharacterId = cloudDoc.activeCharacterId.ifBlank { _accountState.value.activeCharacterId },
+                            lastSyncTimestamp = syncTime,
+                            cloudSyncStatus = "Firebase Cloud Synced • $syncTime"
+                        )
+                        _accountState.value = updatedAcct
+                        prefsManager.saveAccountState(updatedAcct)
+
+                        val updatedSettings = _settingsConfig.value.copy(
+                            defaultMuteWindowMs = cloudDoc.defaultMuteWindowMs.toInt().coerceIn(300, 2200),
+                            defaultSampleRateHz = cloudDoc.defaultSampleRateHz.toInt(),
+                            defaultMonoChannel = cloudDoc.defaultMonoChannel,
+                            caiIntegrationEnabled = cloudDoc.caiIntegrationEnabled,
+                            whatsappIntegrationEnabled = cloudDoc.whatsappIntegrationEnabled,
+                            telegramIntegrationEnabled = cloudDoc.telegramIntegrationEnabled,
+                            googleChatIntegrationEnabled = cloudDoc.googleChatIntegrationEnabled
+                        )
+                        _settingsConfig.value = updatedSettings
+                        prefsManager.saveSettings(updatedSettings)
+                        applySettingsToEngines(updatedSettings)
+                    }
+                }
+        }
+
+        cloudCharactersJob = viewModelScope.launch {
+            cloudSyncRepository.observeCharacterProfiles(user.uid)
+                .catch { e ->
+                    Log.w(TAG, "Error observing cloud character profiles", e)
+                }
+                .collect { cloudProfiles ->
+                    if (cloudProfiles.isNotEmpty()) {
+                        val merged = (cloudProfiles + _accountState.value.syncedCharacters)
+                            .distinctBy { it.characterId }
+                        val updatedAcct = _accountState.value.copy(syncedCharacters = merged)
+                        _accountState.value = updatedAcct
+                        prefsManager.saveAccountState(updatedAcct)
+                        if (_settingsConfig.value.autoSyncCharacterOnLogin) {
+                            applySyncedCharacterToCallAndStudio(updatedAcct.activeCharacter, showToast = false)
+                        }
+                    }
+                }
+        }
+    }
+
+    private fun stopCloudObservation() {
+        cloudAccountJob?.cancel()
+        cloudAccountJob = null
+        cloudCharactersJob?.cancel()
+        cloudCharactersJob = null
+        activeCloudUid = null
+    }
+
+    fun signInWithGoogleCredentialManager(
+        activityContext: Context,
+        characterHandleInput: String = ""
+    ) {
+        viewModelScope.launch {
+            _accountState.value = _accountState.value.copy(
+                isSyncing = true,
+                authErrorMessage = null,
+                cloudSyncStatus = "Opening Google Sign-In via Credential Manager..."
+            )
+            when (val outcome = GoogleAuthHelper.signInWithGoogleInteractive(activityContext)) {
+                is GoogleAuthOutcome.Success -> {
+                    val user = outcome.user
+                    if (characterHandleInput.isNotBlank()) {
+                        val customChar = buildSyncedCharacterFromHandleOrName(
+                            rawInput = characterHandleInput,
+                            ownerName = user.displayName ?: "Studio Creator"
+                        )
+                        val updatedList = _accountState.value.syncedCharacters.toMutableList().apply {
+                            removeAll { it.characterId == customChar.characterId || it.handle.equals(customChar.handle, ignoreCase = true) }
+                            add(0, customChar)
+                        }
+                        _accountState.value = _accountState.value.copy(
+                            isSyncing = false,
+                            provider = AuthProvider.GOOGLE_EMAIL,
+                            syncedCharacters = updatedList,
+                            activeCharacterId = customChar.characterId
+                        )
+                        cloudSyncRepository.upsertCharacterProfile(user.uid, customChar)
+                        applySyncedCharacterToCallAndStudio(customChar, showToast = false)
+                    } else {
+                        _accountState.value = _accountState.value.copy(
+                            isSyncing = false,
+                            provider = AuthProvider.GOOGLE_EMAIL
+                        )
+                    }
+                    cloudSyncRepository.upsertUserAccountAndSettings(
+                        userId = user.uid,
+                        accountState = _accountState.value,
+                        settings = _settingsConfig.value
+                    )
+                    Toast.makeText(
+                        getApplication(),
+                        "Signed in with Google (${user.email ?: user.displayName}) & synced to Firebase Cloud!",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                is GoogleAuthOutcome.Cancelled -> {
+                    _accountState.value = _accountState.value.copy(
+                        isSyncing = false,
+                        authErrorMessage = outcome.message,
+                        cloudSyncStatus = outcome.message
+                    )
+                }
+                is GoogleAuthOutcome.Failure -> {
+                    _accountState.value = _accountState.value.copy(
+                        isSyncing = false,
+                        authErrorMessage = outcome.message,
+                        cloudSyncStatus = outcome.message
+                    )
+                    Toast.makeText(getApplication(), outcome.message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    fun attemptSilentSignIn(activityContext: Context) {
+        viewModelScope.launch {
+            GoogleAuthHelper.attemptSilentGoogleSignIn(activityContext)
+        }
+    }
+
+    fun syncNowWithCloud() {
+        val uid = firebaseAuth.currentUser?.uid
+        if (uid == null) {
+            Toast.makeText(
+                getApplication(),
+                "Sign in with Google first to enable real-time Firebase Cloud backup.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        viewModelScope.launch {
+            _accountState.value = _accountState.value.copy(isSyncing = true, cloudSyncStatus = "Syncing with Firebase Firestore...")
+            val acctRes = cloudSyncRepository.upsertUserAccountAndSettings(
+                userId = uid,
+                accountState = _accountState.value,
+                settings = _settingsConfig.value
+            )
+            _accountState.value.syncedCharacters.forEach { profile ->
+                cloudSyncRepository.upsertCharacterProfile(uid, profile)
+            }
+            val nowStr = SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date())
+            _accountState.value = _accountState.value.copy(
+                isSyncing = false,
+                lastSyncTimestamp = nowStr,
+                cloudSyncStatus = if (acctRes.isSuccess) {
+                    "Firebase Cloud Synced • $nowStr"
+                } else {
+                    "Cloud sync error—saved locally"
+                }
+            )
+            Toast.makeText(getApplication(), "Account, settings & Character.AI profiles synced to Cloud!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun applySettingsToEngines(config: StudioSettingsConfig) {
+        ChimeStreamInterceptor.updateGlobalConfig {
+            it.copy(
+                postSpeechMuteWindowMs = config.defaultMuteWindowMs,
+                spectralNotchEnabled = config.defaultSpectralNotch,
+                telephonyBandpassEnabled = config.defaultTelephonyBandpass
+            )
+        }
+        _characterCallState.value = _characterCallState.value.copy(
+            speakerphoneEnabled = config.defaultCallSpeakerphone,
+            postSpeechMuteWindowMs = config.defaultMuteWindowMs,
+            spectralNotchEnabled = config.defaultSpectralNotch,
+            telephonyBandpassEnabled = config.defaultTelephonyBandpass
+        )
+        opusAudioEngine.setAudioSource(config.defaultAudioSource)
+        opusAudioEngine.setNoiseSuppressionEnabled(config.defaultNoiseSuppression)
+        opusAudioEngine.setAutoGainControlEnabled(config.defaultAutoGainControl)
+        _voiceNoteFormatSpec.value = _voiceNoteFormatSpec.value.copy(
+            sampleRateHz = config.defaultSampleRateHz,
+            isMono = config.defaultMonoChannel,
+            containerTarget = config.defaultExportContainer
+        )
+    }
+
+    fun updateSettingsConfig(transform: (StudioSettingsConfig) -> StudioSettingsConfig) {
+        val updated = transform(_settingsConfig.value)
+        _settingsConfig.value = updated
+        prefsManager.saveSettings(updated)
+        applySettingsToEngines(updated)
+
+        val uid = firebaseAuth.currentUser?.uid
+        if (uid != null) {
+            viewModelScope.launch {
+                cloudSyncRepository.upsertUserAccountAndSettings(uid, _accountState.value, updated)
+            }
+        }
+    }
+
+    fun resetSettingsToDefaults() {
+        val defaults = StudioSettingsConfig()
+        _settingsConfig.value = defaults
+        prefsManager.saveSettings(defaults)
+        applySettingsToEngines(defaults)
+        val uid = firebaseAuth.currentUser?.uid
+        if (uid != null) {
+            viewModelScope.launch {
+                cloudSyncRepository.upsertUserAccountAndSettings(uid, _accountState.value, defaults)
+            }
+        }
+        Toast.makeText(getApplication(), "Studio settings restored to factory defaults.", Toast.LENGTH_SHORT).show()
+    }
+
+    // Account Authentication (Character.AI, Google Account, Apple ID) & Automatic Character Sync
+    fun authenticateAndSyncAccount(
+        provider: AuthProvider,
+        identifier: String,
+        secretOrToken: String,
+        characterHandleInput: String,
+        isSignUp: Boolean
+    ) {
+        val cleanId = identifier.trim()
+        if (cleanId.isBlank()) {
+            Toast.makeText(getApplication(), "Please enter your email or Character.AI username.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        viewModelScope.launch {
+            _accountState.value = _accountState.value.copy(isSyncing = true, authErrorMessage = null)
+            delay(350L)
+
+            val derivedDisplayName = cleanId.substringBefore("@")
+                .replace(".", " ")
+                .replace("_", " ")
+                .split(" ")
+                .filter { it.isNotBlank() }
+                .joinToString(" ") { part ->
+                    part.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+                }
+                .ifBlank { "Studio Creator" }
+
+            val derivedCaiUsername = when {
+                characterHandleInput.isNotBlank() -> characterHandleInput.trim().removePrefix("@")
+                provider == AuthProvider.CHARACTER_AI -> cleanId.substringBefore("@").removePrefix("@")
+                else -> "${cleanId.substringBefore("@").replace(Regex("[^a-zA-Z0-9_]"), "")}_cai"
+            }
+
+            val currentList = _accountState.value.syncedCharacters.toMutableList()
+
+            val syncedPrimaryChar: SyncedCharacterProfile = if (characterHandleInput.isNotBlank()) {
+                val customChar = buildSyncedCharacterFromHandleOrName(
+                    rawInput = characterHandleInput,
+                    ownerName = derivedDisplayName
+                )
+                currentList.removeAll { it.characterId == customChar.characterId || it.handle.equals(customChar.handle, ignoreCase = true) }
+                currentList.add(0, customChar)
+                customChar
+            } else {
+                val accountSyncedChar = SyncedCharacterProfile(
+                    characterId = "cai_${derivedCaiUsername.lowercase(Locale.US).replace(Regex("[^a-z0-9_]"), "_")}",
+                    name = if (provider == AuthProvider.CHARACTER_AI && !cleanId.contains("@")) {
+                        "$derivedDisplayName (c.ai Official)"
+                    } else {
+                        "Aria Vance (@$derivedCaiUsername)"
+                    },
+                    handle = "@$derivedCaiUsername",
+                    tagline = "Synced via ${provider.label} • 48kHz Call Ready",
+                    personaBio = "Automatically synchronized from ${provider.label} ($cleanId). Expressive, natural phone-call companion with zero turn-end UI chimes and matched vocal timbre.",
+                    greeting = "Hey $derivedDisplayName! My Character.AI persona and 48kHz voice profile are synced—ready for our call.",
+                    voicePresetId = "Aoede",
+                    voiceProfileName = "Aoede Neural (${provider.badgeText})",
+                    pitchMultiplier = 1.02f,
+                    speedMultiplier = 1.0f,
+                    recommendedHoldoffMs = _settingsConfig.value.defaultMuteWindowMs
+                )
+                currentList.removeAll { it.characterId == accountSyncedChar.characterId }
+                currentList.add(0, accountSyncedChar)
+                accountSyncedChar
+            }
+
+            val timestamp = SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date())
+            val uid = firebaseAuth.currentUser?.uid ?: ""
+            val newState = UserAccountState(
+                isSignedIn = true,
+                firebaseUid = uid,
+                provider = provider,
+                displayName = derivedDisplayName,
+                emailOrUsername = cleanId,
+                caiLinkedUsername = "@$derivedCaiUsername",
+                lastSyncTimestamp = timestamp,
+                cloudSyncStatus = if (uid.isNotBlank()) {
+                    "Synced to Firebase Cloud & Local Studio • $timestamp"
+                } else {
+                    "Profile Synced Locally • Tap 'Sign In with Google' for Cloud Backup"
+                },
+                isSyncing = false,
+                syncedCharacters = currentList,
+                activeCharacterId = syncedPrimaryChar.characterId
+            )
+            _accountState.value = newState
+            prefsManager.saveAccountState(newState)
+
+            if (uid.isNotBlank()) {
+                cloudSyncRepository.upsertUserAccountAndSettings(uid, newState, _settingsConfig.value)
+                cloudSyncRepository.upsertCharacterProfile(uid, syncedPrimaryChar)
+            }
+
+            if (_settingsConfig.value.autoSyncCharacterOnLogin) {
+                applySyncedCharacterToCallAndStudio(syncedPrimaryChar, showToast = false)
+            }
+
+            val actionVerb = if (isSignUp) "Account registered" else "Signed in"
+            Toast.makeText(
+                getApplication(),
+                "$actionVerb with ${provider.label}! Auto-synced '${syncedPrimaryChar.name}' & voice profile.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    fun syncNewCharacterByHandleOrUrl(rawHandleOrUrl: String, customPersonaHint: String = "", preferredVoiceId: String = "Aoede") {
+        val cleaned = rawHandleOrUrl.trim()
+        if (cleaned.isBlank()) {
+            Toast.makeText(getApplication(), "Enter a Character.AI @handle, name, or character link to sync.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        viewModelScope.launch {
+            _accountState.value = _accountState.value.copy(isSyncing = true)
+            delay(300L)
+
+            val newChar = buildSyncedCharacterFromHandleOrName(
+                rawInput = cleaned,
+                ownerName = _accountState.value.displayName.ifBlank { "Caller" },
+                customPersonaHint = customPersonaHint,
+                preferredVoiceId = preferredVoiceId
+            )
+
+            val updatedList = _accountState.value.syncedCharacters.toMutableList().apply {
+                removeAll { it.characterId == newChar.characterId || it.handle.equals(newChar.handle, ignoreCase = true) }
+                add(0, newChar)
+            }
+            val timestamp = SimpleDateFormat("MMM d, h:mm a", Locale.US).format(Date())
+            val updatedAccount = _accountState.value.copy(
+                isSyncing = false,
+                lastSyncTimestamp = timestamp,
+                syncedCharacters = updatedList,
+                activeCharacterId = newChar.characterId
+            )
+            _accountState.value = updatedAccount
+            prefsManager.saveAccountState(updatedAccount)
+
+            val uid = firebaseAuth.currentUser?.uid
+            if (uid != null) {
+                cloudSyncRepository.upsertCharacterProfile(uid, newChar)
+                cloudSyncRepository.upsertUserAccountAndSettings(uid, updatedAccount, _settingsConfig.value)
+            }
+
+            applySyncedCharacterToCallAndStudio(newChar, showToast = true)
+        }
+    }
+
+    private fun buildSyncedCharacterFromHandleOrName(
+        rawInput: String,
+        ownerName: String,
+        customPersonaHint: String = "",
+        preferredVoiceId: String = "Aoede"
+    ): SyncedCharacterProfile {
+        val extractedSlug = when {
+            rawInput.contains("character.ai/chat/") -> rawInput.substringAfter("character.ai/chat/").substringBefore("?").substringBefore("/")
+            rawInput.contains("character.ai/character/") -> rawInput.substringAfter("character.ai/character/").substringBefore("?").substringBefore("/")
+            else -> rawInput.removePrefix("@").trim()
+        }
+        val cleanHandle = "@" + extractedSlug.replace(Regex("[^a-zA-Z0-9_-]"), "_").lowercase(Locale.US)
+        val displayTitle = extractedSlug
+            .replace("_", " ")
+            .replace("-", " ")
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { part ->
+                part.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+            }
+            .ifBlank { "Synced Character" }
+
+        val matchedVoice = AVAILABLE_VOICES.firstOrNull { it.id.equals(preferredVoiceId, ignoreCase = true) }
+            ?: AVAILABLE_VOICES.first()
+
+        val bio = customPersonaHint.trim().ifBlank {
+            "Synced Character.AI persona ($cleanHandle). Conversational, emotionally responsive phone-call partner tuned for 48kHz Mono voice streaming with zero post-speech chimes."
+        }
+
+        return SyncedCharacterProfile(
+            characterId = "cai_${cleanHandle.removePrefix("@").take(64)}",
+            name = displayTitle,
+            handle = cleanHandle,
+            tagline = "Synced Character.AI Profile • ${matchedVoice.name} Voice",
+            personaBio = bio,
+            greeting = "Hey $ownerName! It's $displayTitle on the line—my voice profile and persona are synced and ready.",
+            voicePresetId = matchedVoice.id,
+            voiceProfileName = "${matchedVoice.name} Studio (${cleanHandle})",
+            pitchMultiplier = if (matchedVoice.gender == VoiceGender.FEMALE) 1.03f else 0.96f,
+            speedMultiplier = 1.0f,
+            recommendedHoldoffMs = _settingsConfig.value.defaultMuteWindowMs
+        )
+    }
+
+    fun selectActiveSyncedCharacter(character: SyncedCharacterProfile) {
+        val updated = _accountState.value.copy(activeCharacterId = character.characterId)
+        _accountState.value = updated
+        prefsManager.saveAccountState(updated)
+        val uid = firebaseAuth.currentUser?.uid
+        if (uid != null) {
+            viewModelScope.launch {
+                cloudSyncRepository.upsertUserAccountAndSettings(uid, updated, _settingsConfig.value)
+            }
+        }
+        applySyncedCharacterToCallAndStudio(character, showToast = true)
+    }
+
+    fun applySyncedCharacterToCallAndStudio(character: SyncedCharacterProfile, showToast: Boolean = true) {
+        val matchedPreset = AVAILABLE_VOICES.firstOrNull { it.id == character.voicePresetId }
+            ?: AVAILABLE_VOICES.first()
+
+        _uiState.value = _uiState.value.copy(
+            selectedVoice = matchedPreset,
+            stylePrompt = character.personaBio,
+            pitch = character.pitchMultiplier,
+            speed = character.speedMultiplier
+        )
+        audioPlayer.setSpeed(character.speedMultiplier)
+
+        ChimeStreamInterceptor.updateGlobalConfig {
+            it.copy(postSpeechMuteWindowMs = character.recommendedHoldoffMs)
+        }
+
+        _characterCallState.value = _characterCallState.value.copy(
+            characterName = "${character.name} (${character.handle})",
+            characterPersona = character.personaBio,
+            characterHandle = character.handle,
+            characterVoiceLabel = character.voiceProfileName,
+            postSpeechMuteWindowMs = character.recommendedHoldoffMs,
+            lastCharacterReply = character.greeting,
+            callStatusText = "Synced ${character.name} • ${character.voiceProfileName}"
+        )
+
+        if (showToast) {
+            Toast.makeText(
+                getApplication(),
+                "Synced ${character.name} (${character.voiceProfileName}) to Call Deck & Studio!",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun signOutAccount(context: Context? = null) {
+        stopCloudObservation()
+        viewModelScope.launch {
+            GoogleAuthHelper.signOut(context ?: getApplication())
+            val resetState = UserAccountState(
+                isSignedIn = false,
+                firebaseUid = "",
+                syncedCharacters = defaultStarterCharacters(),
+                activeCharacterId = "cai_aria_01",
+                cloudSyncStatus = "Signed out • Sign in to sync with Firebase Cloud"
+            )
+            _accountState.value = resetState
+            prefsManager.saveAccountState(resetState)
+            applySyncedCharacterToCallAndStudio(resetState.activeCharacter, showToast = false)
+            Toast.makeText(getApplication(), "Signed out of account.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun toggleDarkMode() {
         _isDarkMode.value = !_isDarkMode.value
     }
@@ -171,8 +778,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value = _uiState.value.copy(activeTab = tab)
     }
 
+    fun setCallSection(section: CaiCallSection) {
+        _uiState.value = _uiState.value.copy(activeCallSection = section)
+    }
+
+    fun setStudioSection(section: VoiceStudioSection) {
+        _uiState.value = _uiState.value.copy(activeStudioSection = section)
+    }
+
     fun setSelectedVoice(voice: VoicePreset) {
         _uiState.value = _uiState.value.copy(selectedVoice = voice)
+        _characterCallState.value = _characterCallState.value.copy(
+            characterVoiceLabel = "${voice.name} (48kHz c.ai Voice)"
+        )
     }
 
     fun setSpeed(speed: Float) {
@@ -191,7 +809,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 val cleanBase = displayName.substringBeforeLast(".").replace(Regex("[^a-zA-Z0-9_-]"), "_")
                 _voiceNoteFormatSpec.value = _voiceNoteFormatSpec.value.copy(customFileName = "${cleanBase}_48k")
                 audioPlayer.loadAndPlay(loaded.wavFile.absolutePath, autoPlay = false)
-                Toast.makeText(getApplication(), "Loaded $displayName", Toast.LENGTH_SHORT).show()
+                _uiState.value = _uiState.value.copy(activeStudioSection = VoiceStudioSection.WAVEFORM_TRIM)
+                Toast.makeText(getApplication(), "Loaded $displayName into Waveform Trimmer", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(getApplication(), "Could not decode audio file", Toast.LENGTH_SHORT).show()
             }
@@ -225,11 +844,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         amplitudesJson = ampsJson
                     )
                     val id = takeDao.insertTake(micTake)
-                    _uiState.value = _uiState.value.copy(activeTake = micTake.copy(id = id))
+                    _uiState.value = _uiState.value.copy(
+                        activeTake = micTake.copy(id = id),
+                        activeStudioSection = VoiceStudioSection.WAVEFORM_TRIM
+                    )
 
                     Toast.makeText(
                         getApplication(),
-                        "48kHz Mono recording (${recorded.totalSamples} samples) loaded into waveform!",
+                        "48kHz Mono recording (${recorded.totalSamples} samples) ready in Waveform & Trim!",
                         Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -359,6 +981,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun sendVoiceNoteToMessenger(context: Context, messenger: MessengerTarget) {
+        val config = _settingsConfig.value
+        val isEnabled = when (messenger) {
+            MessengerTarget.WHATSAPP -> config.whatsappIntegrationEnabled
+            MessengerTarget.TELEGRAM -> config.telegramIntegrationEnabled
+            MessengerTarget.GOOGLE_CHAT -> config.googleChatIntegrationEnabled
+            MessengerTarget.CHARACTER_AI -> config.caiIntegrationEnabled
+        }
+        if (!isEnabled) {
+            Toast.makeText(
+                context,
+                "${messenger.label} integration is currently disabled in Settings -> Integrations.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         val current = _loadedOpusAudio.value ?: return
         val start = _trimStartFraction.value
         val end = _trimEndFraction.value
@@ -668,45 +1306,145 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    /**
+     * Arms the foreground Chime-Blocker DSP service and directly launches the native Character.AI
+     * Android application (`ai.character.app` / `com.character.ai`) without redirecting to a web browser.
+     */
     fun armChimeBlockerAndLaunchCharacterAi(context: Context) {
-        ChimeStreamInterceptor.updateGlobalConfig {
-            it.copy(isEnabled = true, spectralNotchEnabled = true)
-        }
-        CharacterAiChimeInterceptorService.startService(context)
-        _characterCallState.value = _characterCallState.value.copy(
-            chimeBlockerEnabled = true,
-            spectralNotchEnabled = true,
-            callStatusText = "Chime-Blocker Service Armed (${_characterCallState.value.postSpeechMuteWindowMs}ms) • Launching Character.AI"
-        )
-        opusAudioEngine.setAudioSource(StudioAudioSource.VOICE_COMMUNICATION)
-        try {
-            val launchIntent = context.packageManager.getLaunchIntentForPackage("ai.character.app")
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(launchIntent)
-                Toast.makeText(
-                    context,
-                    "Chime-Blocker Service Armed! Launching Character.AI app...",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } else {
-                val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://character.ai")).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(webIntent)
-                Toast.makeText(
-                    context,
-                    "Chime-Blocker Service Armed! Opening Character.AI...",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        } catch (e: Exception) {
+        val config = _settingsConfig.value
+        if (!config.caiIntegrationEnabled) {
             Toast.makeText(
                 context,
-                "Chime-Blocker Service Armed in background for Character.AI calls!",
-                Toast.LENGTH_SHORT
+                "Character.AI integration is disabled in Settings -> Integrations.",
+                Toast.LENGTH_LONG
             ).show()
+            return
         }
+
+        if (config.autoArmChimeBlockerOnLaunch) {
+            ChimeStreamInterceptor.updateGlobalConfig {
+                it.copy(
+                    isEnabled = true,
+                    spectralNotchEnabled = config.defaultSpectralNotch,
+                    telephonyBandpassEnabled = config.defaultTelephonyBandpass
+                )
+            }
+            CharacterAiChimeInterceptorService.startService(context)
+            _characterCallState.value = _characterCallState.value.copy(
+                chimeBlockerEnabled = true,
+                spectralNotchEnabled = config.defaultSpectralNotch,
+                callStatusText = "Chime-Blocker Armed (${_characterCallState.value.postSpeechMuteWindowMs}ms) • Opening Native c.ai App"
+            )
+        }
+        opusAudioEngine.setAudioSource(StudioAudioSource.VOICE_COMMUNICATION)
+
+        val candidatePackages = listOf(
+            config.targetCaiPackage.trim().ifBlank { "ai.character.app" },
+            "ai.character.app",
+            "com.character.ai",
+            "beta.character.ai"
+        ).distinct()
+
+        val pm = context.packageManager
+
+        // 1. If NATIVE_DEEP_LINK_CHARACTER is selected, try opening the native app directly to the synced character via package-restricted URI
+        if (config.caiLaunchMode == CaiLaunchMode.NATIVE_DEEP_LINK_CHARACTER) {
+            val activeSlug = _accountState.value.activeCharacter.handle.removePrefix("@")
+            for (pkg in candidatePackages) {
+                try {
+                    val deepLinkIntent = Intent(Intent.ACTION_VIEW, Uri.parse("characterai://character/$activeSlug")).apply {
+                        setPackage(pkg)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    if (deepLinkIntent.resolveActivity(pm) != null) {
+                        context.startActivity(deepLinkIntent)
+                        Toast.makeText(
+                            context,
+                            "Chime-Blocker Armed! Opening ${_accountState.value.activeCharacter.name} in Character.AI app...",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        // 2. Direct Native Package Launch (getLaunchIntentForPackage or explicit MAIN/LAUNCHER query)
+        for (pkg in candidatePackages) {
+            try {
+                val directLaunchIntent = pm.getLaunchIntentForPackage(pkg)
+                if (directLaunchIntent != null) {
+                    directLaunchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                    context.startActivity(directLaunchIntent)
+                    Toast.makeText(
+                        context,
+                        "Chime-Blocker Armed! Launching native Character.AI app ($pkg)...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return
+                }
+
+                val explicitLauncherIntent = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_LAUNCHER)
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                val resolved = pm.queryIntentActivities(explicitLauncherIntent, 0)
+                if (resolved.isNotEmpty()) {
+                    val activityInfo = resolved.first().activityInfo
+                    explicitLauncherIntent.setClassName(activityInfo.packageName, activityInfo.name)
+                    context.startActivity(explicitLauncherIntent)
+                    Toast.makeText(
+                        context,
+                        "Chime-Blocker Armed! Launching native Character.AI app...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // 3. Try custom scheme `characterai://` (only native app handles this scheme, never web browsers)
+        try {
+            val schemeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("characterai://")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (schemeIntent.resolveActivity(pm) != null) {
+                context.startActivity(schemeIntent)
+                Toast.makeText(
+                    context,
+                    "Chime-Blocker Armed! Launching Character.AI app...",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
+        } catch (_: Exception) {
+        }
+
+        // 4. Native app is not installed on this device: open Google Play Store app listing (never redirect to website)
+        if (config.caiLaunchMode == CaiLaunchMode.PLAY_STORE_IF_MISSING) {
+            try {
+                val marketIntent = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=ai.character.app")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(marketIntent)
+                Toast.makeText(
+                    context,
+                    "Chime-Blocker Armed! Character.AI app not found—opening Play Store.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            } catch (_: Exception) {
+            }
+        }
+
+        Toast.makeText(
+            context,
+            "Chime-Blocker DSP Service is ARMED in the background! Switch to your Character.AI app to start your zero-chime call.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     fun respondToCallerInCharacter(callerPromptInput: String) {
@@ -896,7 +1634,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             selectedVoice = voice,
             speed = take.speed,
             pitch = take.pitch,
-            activeTab = StudioTab.OPUS_TRIMMER
+            activeTab = StudioTab.OPUS_TRIMMER,
+            activeStudioSection = VoiceStudioSection.WAVEFORM_TRIM
         )
     }
 
@@ -1006,6 +1745,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        firebaseAuth.removeAuthStateListener(authStateListener)
+        stopCloudObservation()
         stopCallTimer()
         CharacterAiChimeInterceptorService.stopService(getApplication())
         audioPlayer.release()

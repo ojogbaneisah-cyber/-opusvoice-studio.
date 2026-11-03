@@ -1,0 +1,171 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated user account, studio settings, and active Character.AI synchronization state.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the authenticated user."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address or identifier of the user."
+        },
+        "authProvider": {
+          "type": "string",
+          "description": "Primary linked authentication provider (GOOGLE_EMAIL, CHARACTER_AI, APPLE_ID)."
+        },
+        "caiLinkedUsername": {
+          "type": "string",
+          "description": "Linked Character.AI @handle for automatic character synchronization."
+        },
+        "activeCharacterId": {
+          "type": "string",
+          "description": "ID of the currently active synced Character.AI profile."
+        },
+        "defaultMuteWindowMs": {
+          "type": "integer",
+          "description": "Configured Chime-Blocker post-speech holdoff window in milliseconds (300-2200)."
+        },
+        "defaultSampleRateHz": {
+          "type": "integer",
+          "description": "Configured Studio audio sample rate in Hz (48000, 44100, 24000)."
+        },
+        "defaultMonoChannel": {
+          "type": "boolean",
+          "description": "Whether mono channel audio capture and export is enabled by default."
+        },
+        "caiIntegrationEnabled": {
+          "type": "boolean",
+          "description": "Whether direct native Character.AI app integration is enabled."
+        },
+        "whatsappIntegrationEnabled": {
+          "type": "boolean",
+          "description": "Whether WhatsApp PTT .opus voice note integration is enabled."
+        },
+        "telegramIntegrationEnabled": {
+          "type": "boolean",
+          "description": "Whether Telegram 48kHz .ogg voice note integration is enabled."
+        },
+        "googleChatIntegrationEnabled": {
+          "type": "boolean",
+          "description": "Whether Google Chat .ogg voice note integration is enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account document was created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the account document was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "email",
+        "authProvider",
+        "caiLinkedUsername",
+        "activeCharacterId",
+        "defaultMuteWindowMs",
+        "defaultSampleRateHz",
+        "defaultMonoChannel",
+        "caiIntegrationEnabled",
+        "whatsappIntegrationEnabled",
+        "telegramIntegrationEnabled",
+        "googleChatIntegrationEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CharacterProfile": {
+      "title": "CharacterProfile",
+      "description": "Synchronized Character.AI character persona and 48kHz voice configuration owned by a user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "characterId": {
+          "type": "string",
+          "description": "Unique identifier for the synced character."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the character."
+        },
+        "handle": {
+          "type": "string",
+          "description": "Character.AI @handle of the character."
+        },
+        "tagline": {
+          "type": "string",
+          "description": "Short tagline describing the character."
+        },
+        "personaBio": {
+          "type": "string",
+          "description": "Detailed persona backstory and speaking style."
+        },
+        "greeting": {
+          "type": "string",
+          "description": "Opening greeting spoken when connecting a call."
+        },
+        "voicePresetId": {
+          "type": "string",
+          "description": "Studio voice preset ID bound to this character."
+        },
+        "voiceProfileName": {
+          "type": "string",
+          "description": "Human-readable label for the character's voice configuration."
+        },
+        "recommendedHoldoffMs": {
+          "type": "integer",
+          "description": "Recommended post-speech chime holdoff gate in milliseconds (300-2200)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "characterId",
+        "name",
+        "handle",
+        "tagline",
+        "personaBio",
+        "greeting",
+        "voicePresetId",
+        "voiceProfileName",
+        "recommendedHoldoffMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserAccount",
+      "description": "Per-user account document storing linked auth providers, studio preferences, and active Character.AI sync state."
+    },
+    "/users/{userId}/characterProfiles/{characterId}": {
+      "schema": "CharacterProfile",
+      "description": "Per-user subcollection of synchronized Character.AI personas and 48kHz voice configurations."
+    }
+  }
+}
