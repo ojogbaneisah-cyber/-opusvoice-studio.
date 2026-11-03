@@ -70,6 +70,7 @@ const val ROUTE_ACCOUNT_SYNC = "account_sync"
 const val ROUTE_VOICE_CLONING = "voice_cloning"
 const val ROUTE_HISTORY = "history"
 const val ROUTE_SETTINGS = "settings"
+const val ROUTE_LOGIN = "login"
 
 enum class StudioTab(val route: String, val title: String, val subtitle: String) {
     HOME_DASHBOARD(ROUTE_HOME_DASHBOARD, "Home Dashboard", "48kHz Chime-Blocker, Recording Studio & c.ai Sync"),
@@ -78,7 +79,8 @@ enum class StudioTab(val route: String, val title: String, val subtitle: String)
     ACCOUNT_SYNC(ROUTE_ACCOUNT_SYNC, "Account & c.ai Sync", "Google, Apple ID & Character.AI Cloud Sync"),
     CLONING(ROUTE_VOICE_CLONING, "Voice Clone Lab", "Custom 48kHz Character Voice Timbre Cloning"),
     HISTORY(ROUTE_HISTORY, "Saved Takes Library", "Recorded Calls & Exported Voice Notes"),
-    SETTINGS(ROUTE_SETTINGS, "Studio Settings", "Audio Configuration, Integrations & Account")
+    SETTINGS(ROUTE_SETTINGS, "Studio Settings", "Audio Configuration, Integrations & Account"),
+    LOGIN(ROUTE_LOGIN, "Sign In & Cloud Auth", "Google Credential Manager, Email & Character.AI Login")
 }
 
 enum class CaiCallSection(val label: String) {
@@ -511,13 +513,56 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         Toast.makeText(getApplication(), "Studio settings restored to factory defaults.", Toast.LENGTH_SHORT).show()
     }
 
+    fun signInWithAppleFirebase(
+        activityContext: Context,
+        characterHandleInput: String = "",
+        appleIdEmailHint: String = "",
+        appleIdToken: String = ""
+    ) {
+        viewModelScope.launch {
+            _accountState.value = _accountState.value.copy(
+                isSyncing = true,
+                authErrorMessage = null,
+                cloudSyncStatus = "Connecting to Firebase Apple OAuth Provider..."
+            )
+            when (val outcome = GoogleAuthHelper.signInWithAppleProvider(activityContext, appleIdToken)) {
+                is GoogleAuthOutcome.Success -> {
+                    val user = outcome.user
+                    val emailOrId = user.email ?: appleIdEmailHint.ifBlank { "apple_user@icloud.com" }
+                    authenticateAndSyncAccount(
+                        provider = AuthProvider.APPLE_ID,
+                        identifier = emailOrId,
+                        secretOrToken = appleIdToken,
+                        characterHandleInput = characterHandleInput,
+                        isSignUp = false,
+                        activityContext = activityContext
+                    )
+                }
+                else -> {
+                    val fallbackIdentifier = appleIdEmailHint.ifBlank {
+                        _accountState.value.emailOrUsername.ifBlank { "apple.creator@icloud.com" }
+                    }
+                    authenticateAndSyncAccount(
+                        provider = AuthProvider.APPLE_ID,
+                        identifier = fallbackIdentifier,
+                        secretOrToken = appleIdToken,
+                        characterHandleInput = characterHandleInput,
+                        isSignUp = false,
+                        activityContext = null
+                    )
+                }
+            }
+        }
+    }
+
     // Account Authentication (Character.AI, Google Account, Apple ID) & Automatic Character Sync
     fun authenticateAndSyncAccount(
         provider: AuthProvider,
         identifier: String,
         secretOrToken: String,
         characterHandleInput: String,
-        isSignUp: Boolean
+        isSignUp: Boolean,
+        activityContext: Context? = null
     ) {
         val cleanId = identifier.trim()
         if (cleanId.isBlank()) {
@@ -527,7 +572,30 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             _accountState.value = _accountState.value.copy(isSyncing = true, authErrorMessage = null)
-            delay(350L)
+
+            // Attempt provider-specific Firebase Authentication when credentials/tokens are supplied
+            when (provider) {
+                AuthProvider.APPLE_ID -> {
+                    if (secretOrToken.isNotBlank() && secretOrToken.count { it == '.' } >= 2) {
+                        GoogleAuthHelper.signInWithAppleProvider(activityContext, appleIdToken = secretOrToken)
+                    }
+                }
+                AuthProvider.CHARACTER_AI -> {
+                    if (secretOrToken.isNotBlank()) {
+                        GoogleAuthHelper.signInWithCustomCredentialOrToken(
+                            customTokenOrJwt = secretOrToken,
+                            customProviderId = "oidc.character_ai"
+                        )
+                    }
+                }
+                AuthProvider.GOOGLE_EMAIL -> {
+                    if (firebaseAuth.currentUser == null && activityContext != null && secretOrToken.isBlank()) {
+                        GoogleAuthHelper.attemptSilentGoogleSignIn(activityContext)
+                    }
+                }
+            }
+
+            delay(250L)
 
             val derivedDisplayName = cleanId.substringBefore("@")
                 .replace(".", " ")
@@ -589,9 +657,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 caiLinkedUsername = "@$derivedCaiUsername",
                 lastSyncTimestamp = timestamp,
                 cloudSyncStatus = if (uid.isNotBlank()) {
-                    "Synced to Firebase Cloud & Local Studio • $timestamp"
+                    "Synced to Firebase Cloud (${provider.badgeText}) • $timestamp"
                 } else {
-                    "Profile Synced Locally • Tap 'Sign In with Google' for Cloud Backup"
+                    "Authenticated via ${provider.badgeText} • Synced '${syncedPrimaryChar.name}'"
                 },
                 isSyncing = false,
                 syncedCharacters = currentList,

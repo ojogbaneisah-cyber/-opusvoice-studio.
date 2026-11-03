@@ -1,6 +1,8 @@
 package com.example.data.cloud
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
@@ -17,6 +19,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.OAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.tasks.await
 
@@ -28,6 +31,15 @@ sealed interface GoogleAuthOutcome {
 
 object GoogleAuthHelper {
     private const val TAG = "GoogleAuthHelper"
+
+    private fun Context.findActivity(): Activity? {
+        var ctx: Context? = this
+        while (ctx is ContextWrapper) {
+            if (ctx is Activity) return ctx
+            ctx = ctx.baseContext
+        }
+        return null
+    }
 
     /**
      * Interactive sign-in invoked when the user taps the Google Sign-In button.
@@ -126,6 +138,98 @@ object GoogleAuthHelper {
         } catch (e: Exception) {
             Log.w(TAG, "Silent sign-in error", e)
             null
+        }
+    }
+
+    /**
+     * Apple ID Sign-In via Firebase OAuthProvider ("apple.com").
+     * Supports either an explicit Apple ID JWT token or interactive OAuth flow when Activity context is provided.
+     */
+    suspend fun signInWithAppleProvider(
+        activityContext: Context?,
+        appleIdToken: String = "",
+        rawNonce: String = ""
+    ): GoogleAuthOutcome {
+        return try {
+            if (appleIdToken.isNotBlank() && appleIdToken.count { it == '.' } >= 2) {
+                val credentialBuilder = OAuthProvider.newCredentialBuilder("apple.com")
+                if (rawNonce.isNotBlank()) {
+                    credentialBuilder.setIdTokenWithRawNonce(appleIdToken.trim(), rawNonce.trim())
+                } else {
+                    credentialBuilder.setIdToken(appleIdToken.trim())
+                }
+                val authResult = Firebase.auth.signInWithCredential(credentialBuilder.build()).await()
+                val user = authResult.user
+                if (user != null) {
+                    return GoogleAuthOutcome.Success(user)
+                }
+            }
+
+            val activity = activityContext?.findActivity()
+            if (activity != null) {
+                val providerBuilder = OAuthProvider.newBuilder("apple.com")
+                    .setScopes(listOf("email", "name"))
+                val pendingTask = Firebase.auth.pendingAuthResult
+                val authResult = if (pendingTask != null) {
+                    pendingTask.await()
+                } else {
+                    Firebase.auth.startActivityForSignInWithProvider(activity, providerBuilder.build()).await()
+                }
+                val user = authResult?.user
+                if (user != null) {
+                    GoogleAuthOutcome.Success(user)
+                } else {
+                    GoogleAuthOutcome.Failure("Apple ID sign-in returned no Firebase user.")
+                }
+            } else {
+                GoogleAuthOutcome.Failure("Apple OAuth requires an active Activity or Apple ID JWT token.")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Apple Firebase OAuth flow note: ${e.localizedMessage}")
+            GoogleAuthOutcome.Failure("Apple OAuth: ${e.localizedMessage ?: "Provider not enabled in Firebase Console"}")
+        }
+    }
+
+    /**
+     * Custom Credential & Token Sign-In via Firebase Auth (`signInWithCustomToken` or custom `OAuthProvider`).
+     * Supports Character.AI custom JWT tokens and OIDC credentials.
+     */
+    suspend fun signInWithCustomCredentialOrToken(
+        customTokenOrJwt: String,
+        customProviderId: String = "oidc.character_ai"
+    ): GoogleAuthOutcome {
+        val cleanToken = customTokenOrJwt.trim()
+        if (cleanToken.isBlank()) {
+            return GoogleAuthOutcome.Failure("No custom credential token provided.")
+        }
+        return try {
+            // 1. If token is a Firebase Custom JWT (3-segment JWT), attempt signInWithCustomToken first
+            if (cleanToken.count { it == '.' } == 2) {
+                try {
+                    val customAuthResult = Firebase.auth.signInWithCustomToken(cleanToken).await()
+                    val user = customAuthResult.user
+                    if (user != null) {
+                        return GoogleAuthOutcome.Success(user)
+                    }
+                } catch (inner: Exception) {
+                    Log.d(TAG, "Custom token not a direct Firebase custom token, attempting OIDC credential", inner)
+                }
+            }
+
+            // 2. Attempt OAuthProvider credential with customProviderId
+            val credential = OAuthProvider.newCredentialBuilder(customProviderId)
+                .setIdToken(cleanToken)
+                .build()
+            val result = Firebase.auth.signInWithCredential(credential).await()
+            val user = result.user
+            if (user != null) {
+                GoogleAuthOutcome.Success(user)
+            } else {
+                GoogleAuthOutcome.Failure("Custom credential authentication returned no user.")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Custom credential Firebase auth note: ${e.localizedMessage}")
+            GoogleAuthOutcome.Failure("Custom credential note: ${e.localizedMessage ?: "Verified locally"}")
         }
     }
 

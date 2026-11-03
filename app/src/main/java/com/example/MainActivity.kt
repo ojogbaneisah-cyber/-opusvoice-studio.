@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -34,9 +35,10 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.RecordVoiceOver
@@ -89,6 +91,7 @@ import com.example.ui.ROUTE_ACCOUNT_SYNC
 import com.example.ui.ROUTE_CAI_CALL
 import com.example.ui.ROUTE_HISTORY
 import com.example.ui.ROUTE_HOME_DASHBOARD
+import com.example.ui.ROUTE_LOGIN
 import com.example.ui.ROUTE_RECORDING_STUDIO
 import com.example.ui.ROUTE_SETTINGS
 import com.example.ui.ROUTE_VOICE_CLONING
@@ -97,9 +100,11 @@ import com.example.ui.StudioViewModel
 import com.example.ui.VoiceStudioSection
 import com.example.ui.components.AudioPlayerBottomCard
 import com.example.ui.components.ExportConfigurationDialog
+import com.example.ui.components.StudioNavigationDrawer
 import com.example.ui.screens.AccountSyncScreen
 import com.example.ui.screens.CharacterAiCallScreen
 import com.example.ui.screens.HomeDashboardScreen
+import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.OpusVoiceStudioScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.TakesHistoryScreen
@@ -136,39 +141,15 @@ class MainActivity : ComponentActivity() {
                 val exportConfig by viewModel.exportConfig.collectAsState()
                 val context = LocalContext.current
 
-                val navController: NavHostController = rememberNavController()
+                val navController = rememberNavController()
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = navBackStackEntry?.destination?.route ?: ROUTE_HOME_DASHBOARD
 
-                val navigateToTab: (StudioTab) -> Unit = { targetTab ->
-                    viewModel.setTab(targetTab)
-                    if (navController.currentDestination?.route != targetTab.route) {
-                        navController.navigate(targetTab.route) {
-                            popUpTo(navController.graph.findStartDestination().id) {
-                                saveState = true
-                            }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
+                val activeTab = remember(currentRoute) {
+                    StudioTab.entries.firstOrNull { it.route == currentRoute } ?: StudioTab.HOME_DASHBOARD
                 }
 
-                // Keep NavController synchronized if ViewModel updates activeTab directly
-                LaunchedEffect(uiState.activeTab) {
-                    if (navController.currentDestination?.route != null &&
-                        navController.currentDestination?.route != uiState.activeTab.route
-                    ) {
-                        navController.navigate(uiState.activeTab.route) {
-                            popUpTo(navController.graph.findStartDestination().id) {
-                                saveState = true
-                            }
-                            launchSingleTop = true
-                            restoreState = true
-                        }
-                    }
-                }
-
-                // Keep ViewModel activeTab synchronized when back stack pops
+                // Keep ViewModel activeTab and NavController synchronized in both directions
                 LaunchedEffect(currentRoute) {
                     val matchedTab = StudioTab.entries.firstOrNull { it.route == currentRoute }
                     if (matchedTab != null && uiState.activeTab != matchedTab) {
@@ -176,8 +157,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                LaunchedEffect(Unit) {
-                    viewModel.attemptSilentSignIn(context)
+                LaunchedEffect(uiState.activeTab) {
+                    if (currentRoute != uiState.activeTab.route) {
+                        navigateToStudioTab(navController, viewModel, uiState.activeTab)
+                    }
                 }
 
                 val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -219,27 +202,27 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                val activeTabForBar = StudioTab.entries.firstOrNull { it.route == currentRoute } ?: uiState.activeTab
-
                 ModalNavigationDrawer(
                     drawerState = drawerState,
                     drawerContent = {
-                        StudioNavigationDrawerContent(
-                            activeTab = activeTabForBar,
+                        StudioNavigationDrawer(
+                            activeTab = activeTab,
+                            activeCallSection = uiState.activeCallSection,
+                            activeStudioSection = uiState.activeStudioSection,
                             accountState = accountState,
                             isDarkMode = isDarkMode,
                             onSelectTab = { tab ->
-                                navigateToTab(tab)
+                                navigateToStudioTab(navController, viewModel, tab)
                                 coroutineScope.launch { drawerState.close() }
                             },
                             onSelectCallSubSection = { section ->
                                 viewModel.setCallSection(section)
-                                navigateToTab(StudioTab.CAI_CALL)
+                                navigateToStudioTab(navController, viewModel, StudioTab.CAI_CALL)
                                 coroutineScope.launch { drawerState.close() }
                             },
                             onSelectStudioSubSection = { section ->
                                 viewModel.setStudioSection(section)
-                                navigateToTab(StudioTab.OPUS_TRIMMER)
+                                navigateToStudioTab(navController, viewModel, StudioTab.OPUS_TRIMMER)
                                 coroutineScope.launch { drawerState.close() }
                             }
                         )
@@ -254,13 +237,21 @@ class MainActivity : ComponentActivity() {
                             StudioTopAppBar(
                                 isDarkMode = isDarkMode,
                                 onToggleTheme = { viewModel.toggleDarkMode() },
-                                activeTab = activeTabForBar,
+                                activeTab = activeTab,
                                 accountState = accountState,
                                 onOpenDrawer = {
                                     coroutineScope.launch { drawerState.open() }
                                 },
-                                onSelectAccountSync = { navigateToTab(StudioTab.ACCOUNT_SYNC) },
-                                onSelectSettings = { navigateToTab(StudioTab.SETTINGS) }
+                                onSelectAccountSync = {
+                                    if (accountState.isSignedIn) {
+                                        navigateToStudioTab(navController, viewModel, StudioTab.ACCOUNT_SYNC)
+                                    } else {
+                                        navigateToStudioTab(navController, viewModel, StudioTab.LOGIN)
+                                    }
+                                },
+                                onSelectSettings = {
+                                    navigateToStudioTab(navController, viewModel, StudioTab.SETTINGS)
+                                }
                             )
                         },
                         bottomBar = {
@@ -269,7 +260,7 @@ class MainActivity : ComponentActivity() {
                                     .fillMaxWidth()
                                     .windowInsetsPadding(WindowInsets.navigationBars)
                             ) {
-                                if (uiState.activeTake != null && currentRoute == ROUTE_HISTORY) {
+                                if (uiState.activeTake != null && activeTab == StudioTab.HISTORY) {
                                     AudioPlayerBottomCard(
                                         activeTake = uiState.activeTake,
                                         playerState = playerState,
@@ -297,11 +288,13 @@ class MainActivity : ComponentActivity() {
                                         .border(1.dp, borderCol)
                                 ) {
                                     NavigationBarItem(
-                                        selected = currentRoute == ROUTE_HOME_DASHBOARD,
-                                        onClick = { navigateToTab(StudioTab.HOME_DASHBOARD) },
+                                        selected = activeTab == StudioTab.HOME_DASHBOARD,
+                                        onClick = {
+                                            navigateToStudioTab(navController, viewModel, StudioTab.HOME_DASHBOARD)
+                                        },
                                         icon = {
                                             Icon(
-                                                imageVector = Icons.Default.Dashboard,
+                                                imageVector = Icons.Default.Home,
                                                 contentDescription = "Home Dashboard",
                                                 modifier = Modifier.size(20.dp)
                                             )
@@ -314,33 +307,14 @@ class MainActivity : ComponentActivity() {
                                             unselectedIconColor = unselectedCol,
                                             unselectedTextColor = unselectedCol
                                         ),
-                                        modifier = Modifier.testTag("nav_tab_home")
+                                        modifier = Modifier.testTag("nav_tab_home_dashboard")
                                     )
 
                                     NavigationBarItem(
-                                        selected = currentRoute == ROUTE_RECORDING_STUDIO,
-                                        onClick = { navigateToTab(StudioTab.OPUS_TRIMMER) },
-                                        icon = {
-                                            Icon(
-                                                imageVector = Icons.Default.ContentCut,
-                                                contentDescription = "48kHz Recording Studio",
-                                                modifier = Modifier.size(20.dp)
-                                            )
+                                        selected = activeTab == StudioTab.CAI_CALL,
+                                        onClick = {
+                                            navigateToStudioTab(navController, viewModel, StudioTab.CAI_CALL)
                                         },
-                                        label = { Text("Studio", fontSize = 10.sp, maxLines = 1, fontWeight = FontWeight.SemiBold) },
-                                        colors = NavigationBarItemDefaults.colors(
-                                            selectedIconColor = Color.White,
-                                            selectedTextColor = OpusRed,
-                                            indicatorColor = OpusRed,
-                                            unselectedIconColor = unselectedCol,
-                                            unselectedTextColor = unselectedCol
-                                        ),
-                                        modifier = Modifier.testTag("nav_tab_opus_trimmer")
-                                    )
-
-                                    NavigationBarItem(
-                                        selected = currentRoute == ROUTE_CAI_CALL,
-                                        onClick = { navigateToTab(StudioTab.CAI_CALL) },
                                         icon = {
                                             Icon(
                                                 imageVector = Icons.Default.PhoneInTalk,
@@ -360,8 +334,33 @@ class MainActivity : ComponentActivity() {
                                     )
 
                                     NavigationBarItem(
-                                        selected = currentRoute == ROUTE_ACCOUNT_SYNC,
-                                        onClick = { navigateToTab(StudioTab.ACCOUNT_SYNC) },
+                                        selected = activeTab == StudioTab.OPUS_TRIMMER,
+                                        onClick = {
+                                            navigateToStudioTab(navController, viewModel, StudioTab.OPUS_TRIMMER)
+                                        },
+                                        icon = {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCut,
+                                                contentDescription = "48kHz Voice Note Studio",
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        },
+                                        label = { Text("Studio", fontSize = 10.sp, maxLines = 1, fontWeight = FontWeight.SemiBold) },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = Color.White,
+                                            selectedTextColor = OpusRed,
+                                            indicatorColor = OpusRed,
+                                            unselectedIconColor = unselectedCol,
+                                            unselectedTextColor = unselectedCol
+                                        ),
+                                        modifier = Modifier.testTag("nav_tab_opus_trimmer")
+                                    )
+
+                                    NavigationBarItem(
+                                        selected = activeTab == StudioTab.ACCOUNT_SYNC || activeTab == StudioTab.LOGIN,
+                                        onClick = {
+                                            navigateToStudioTab(navController, viewModel, StudioTab.ACCOUNT_SYNC)
+                                        },
                                         icon = {
                                             Icon(
                                                 imageVector = Icons.Default.CloudSync,
@@ -381,8 +380,10 @@ class MainActivity : ComponentActivity() {
                                     )
 
                                     NavigationBarItem(
-                                        selected = currentRoute == ROUTE_SETTINGS,
-                                        onClick = { navigateToTab(StudioTab.SETTINGS) },
+                                        selected = activeTab == StudioTab.SETTINGS,
+                                        onClick = {
+                                            navigateToStudioTab(navController, viewModel, StudioTab.SETTINGS)
+                                        },
                                         icon = {
                                             Icon(
                                                 imageVector = Icons.Default.Settings,
@@ -404,71 +405,15 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     ) { paddingValues ->
-                        NavHost(
+                        StudioNavHost(
                             navController = navController,
-                            startDestination = ROUTE_HOME_DASHBOARD,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            composable(route = ROUTE_HOME_DASHBOARD) {
-                                HomeDashboardScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues,
-                                    onNavigateToRecordingStudio = { navigateToTab(StudioTab.OPUS_TRIMMER) },
-                                    onNavigateToCallBridge = { navigateToTab(StudioTab.CAI_CALL) },
-                                    onNavigateToSettings = { navigateToTab(StudioTab.SETTINGS) },
-                                    onNavigateToAccountSync = { navigateToTab(StudioTab.ACCOUNT_SYNC) },
-                                    onNavigateToHistory = { navigateToTab(StudioTab.HISTORY) },
-                                    onNavigateToVoiceCloning = { navigateToTab(StudioTab.CLONING) }
-                                )
+                            viewModel = viewModel,
+                            paddingValues = paddingValues,
+                            onOpenExportModal = { take ->
+                                exportTargetTake = take
+                                showExportModal = true
                             }
-
-                            composable(route = ROUTE_CAI_CALL) {
-                                CharacterAiCallScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues
-                                )
-                            }
-
-                            composable(route = ROUTE_RECORDING_STUDIO) {
-                                OpusVoiceStudioScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues
-                                )
-                            }
-
-                            composable(route = ROUTE_ACCOUNT_SYNC) {
-                                AccountSyncScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues
-                                )
-                            }
-
-                            composable(route = ROUTE_VOICE_CLONING) {
-                                VoiceCloningScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues
-                                )
-                            }
-
-                            composable(route = ROUTE_HISTORY) {
-                                TakesHistoryScreen(
-                                    viewModel = viewModel,
-                                    onOpenExportModal = { take ->
-                                        exportTargetTake = take
-                                        showExportModal = true
-                                    },
-                                    paddingValues = paddingValues
-                                )
-                            }
-
-                            composable(route = ROUTE_SETTINGS) {
-                                SettingsScreen(
-                                    viewModel = viewModel,
-                                    paddingValues = paddingValues,
-                                    onNavigateToAccountPortal = { navigateToTab(StudioTab.ACCOUNT_SYNC) }
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }
@@ -476,269 +421,110 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-private fun StudioNavigationDrawerContent(
-    activeTab: StudioTab,
-    accountState: UserAccountState,
-    isDarkMode: Boolean,
-    onSelectTab: (StudioTab) -> Unit,
-    onSelectCallSubSection: (CaiCallSection) -> Unit,
-    onSelectStudioSubSection: (VoiceStudioSection) -> Unit
+private fun navigateToStudioTab(
+    navController: NavHostController,
+    viewModel: StudioViewModel,
+    tab: StudioTab
 ) {
-    val drawerBg = if (isDarkMode) StudioSurface else OpusWhiteBackground
-    val cardBg = if (isDarkMode) Color(0xFF222634) else OpusWhiteSurface
-    val borderCol = if (isDarkMode) StudioCardBorder else OpusLightBorder
-    val textMain = if (isDarkMode) Color(0xFFF8FAFC) else OpusLightTextPrimary
-    val textSub = if (isDarkMode) Color(0xFF94A3B8) else OpusLightTextSecondary
+    viewModel.setTab(tab)
+    navController.navigate(tab.route) {
+        popUpTo(navController.graph.findStartDestination().id) {
+            saveState = true
+        }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
 
-    ModalDrawerSheet(
-        drawerContainerColor = drawerBg,
-        modifier = Modifier
-            .width(305.dp)
-            .fillMaxHeight()
+@Composable
+private fun StudioNavHost(
+    navController: NavHostController,
+    viewModel: StudioViewModel,
+    paddingValues: PaddingValues,
+    onOpenExportModal: (VoiceTakeEntity) -> Unit
+) {
+    NavHost(
+        navController = navController,
+        startDestination = ROUTE_HOME_DASHBOARD,
+        modifier = Modifier.fillMaxSize()
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Drawer Account & Active Synced Character Header Card
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(cardBg)
-                    .border(1.dp, if (accountState.isSignedIn) StudioGreen else borderCol, RoundedCornerShape(14.dp))
-                    .clickable { onSelectTab(StudioTab.ACCOUNT_SYNC) }
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(if (accountState.isSignedIn) StudioGreen else OpusRed),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (accountState.isSignedIn) Icons.Default.VerifiedUser else Icons.Default.AccountCircle,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (accountState.isSignedIn) accountState.displayName else "Sign In / Sign Up",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = textMain
-                        )
-                        Text(
-                            text = if (accountState.isSignedIn) {
-                                "${accountState.provider.label} • Synced"
-                            } else {
-                                "Apple ID • Google • Character.AI"
-                            },
-                            fontSize = 11.sp,
-                            color = if (accountState.isSignedIn) StudioGreen else OpusRed,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+        composable(ROUTE_HOME_DASHBOARD) {
+            HomeDashboardScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues,
+                onNavigateToRecordingStudio = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.OPUS_TRIMMER)
+                },
+                onNavigateToCallBridge = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.CAI_CALL)
+                },
+                onNavigateToSettings = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.SETTINGS)
+                },
+                onNavigateToAccountSync = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.ACCOUNT_SYNC)
+                },
+                onNavigateToHistory = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.HISTORY)
+                },
+                onNavigateToVoiceCloning = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.CLONING)
                 }
-                Text(
-                    text = "Active Persona: ${accountState.activeCharacter.name} (${accountState.activeCharacter.voiceProfileName})",
-                    fontSize = 10.sp,
-                    color = textSub
-                )
-            }
-
-            DrawerMenuItem(
-                title = "Home Dashboard",
-                subtitle = "Overview, quick actions & studio status",
-                icon = Icons.Default.Dashboard,
-                selected = activeTab == StudioTab.HOME_DASHBOARD,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectTab(StudioTab.HOME_DASHBOARD) }
             )
-
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "CHARACTER.AI CALL & CHIME BLOCKER",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = OpusRed,
-                letterSpacing = 0.8.sp,
-                modifier = Modifier.padding(horizontal = 8.dp)
+        }
+        composable(ROUTE_CAI_CALL) {
+            CharacterAiCallScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues
             )
-
-            DrawerMenuItem(
-                title = "Live Call Deck & Native App",
-                subtitle = "Start call, mute, speaker & open c.ai app",
-                icon = Icons.Default.PhoneInTalk,
-                selected = activeTab == StudioTab.CAI_CALL,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectCallSubSection(CaiCallSection.LIVE_DECK) }
+        }
+        composable(ROUTE_RECORDING_STUDIO) {
+            OpusVoiceStudioScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues
             )
-            DrawerMenuItem(
-                title = "Chime-Blocker DSP & Holdoff",
-                subtitle = "Post-speech gate & 800Hz–2.8kHz notch",
-                icon = Icons.Default.Settings,
-                selected = false,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectCallSubSection(CaiCallSection.CHIME_DSP) }
+        }
+        composable(ROUTE_ACCOUNT_SYNC) {
+            AccountSyncScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues
             )
-            DrawerMenuItem(
-                title = "Character Persona & Voice",
-                subtitle = "Edit synced character & voice preset",
-                icon = Icons.Default.RecordVoiceOver,
-                selected = false,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectCallSubSection(CaiCallSection.CHARACTER_VOICE) }
+        }
+        composable(ROUTE_VOICE_CLONING) {
+            VoiceCloningScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues
             )
-
-            HorizontalDivider(color = borderCol, modifier = Modifier.padding(vertical = 4.dp))
-
-            Text(
-                text = "48KHZ RECORDING STUDIO",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = OpusRed,
-                letterSpacing = 0.8.sp,
-                modifier = Modifier.padding(horizontal = 8.dp)
+        }
+        composable(ROUTE_HISTORY) {
+            TakesHistoryScreen(
+                viewModel = viewModel,
+                onOpenExportModal = onOpenExportModal,
+                paddingValues = paddingValues
             )
-
-            DrawerMenuItem(
-                title = "1. Record 48kHz & Import",
-                subtitle = "Mono AudioRecord pre-amp & file upload",
-                icon = Icons.Default.ContentCut,
-                selected = activeTab == StudioTab.OPUS_TRIMMER,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectStudioSubSection(VoiceStudioSection.RECORD_IMPORT) }
+        }
+        composable(ROUTE_SETTINGS) {
+            SettingsScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues,
+                onNavigateToAccountPortal = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.LOGIN)
+                }
             )
-            DrawerMenuItem(
-                title = "2. Waveform & De-Chime Trimmer",
-                subtitle = "Interactive trim handles & c.ai de-chimer",
-                icon = Icons.Default.ContentCut,
-                selected = false,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectStudioSubSection(VoiceStudioSection.WAVEFORM_TRIM) }
-            )
-            DrawerMenuItem(
-                title = "3. Ogg/Opus Format & PTT Export",
-                subtitle = "WhatsApp .opus, Telegram & Google Chat .ogg",
-                icon = Icons.Default.ContentCut,
-                selected = false,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectStudioSubSection(VoiceStudioSection.FORMAT_EXPORT) }
-            )
-
-            HorizontalDivider(color = borderCol, modifier = Modifier.padding(vertical = 4.dp))
-
-            Text(
-                text = "ACCOUNTS, CLONING & CONFIGURATION",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = OpusRed,
-                letterSpacing = 0.8.sp,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            )
-
-            DrawerMenuItem(
-                title = "Account & Character.AI Sync",
-                subtitle = "Apple ID, Google Email & c.ai login",
-                icon = Icons.Default.CloudSync,
-                selected = activeTab == StudioTab.ACCOUNT_SYNC,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectTab(StudioTab.ACCOUNT_SYNC) }
-            )
-            DrawerMenuItem(
-                title = "Voice Clone Lab",
-                subtitle = "Analyze & clone custom character voices",
-                icon = Icons.Default.RecordVoiceOver,
-                selected = activeTab == StudioTab.CLONING,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectTab(StudioTab.CLONING) }
-            )
-            DrawerMenuItem(
-                title = "Saved Clips & Call History",
-                subtitle = "Replay & share recorded takes",
-                icon = Icons.Default.History,
-                selected = activeTab == StudioTab.HISTORY,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectTab(StudioTab.HISTORY) }
-            )
-            DrawerMenuItem(
-                title = "Studio Settings & Configuration",
-                subtitle = "Audio Configuration, Integrations & Account",
-                icon = Icons.Default.Settings,
-                selected = activeTab == StudioTab.SETTINGS,
-                textMain = textMain,
-                textSub = textSub,
-                onClick = { onSelectTab(StudioTab.SETTINGS) }
+        }
+        composable(ROUTE_LOGIN) {
+            LoginScreen(
+                viewModel = viewModel,
+                paddingValues = paddingValues,
+                onNavigateToHome = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.HOME_DASHBOARD)
+                },
+                onNavigateToAccountSync = {
+                    navigateToStudioTab(navController, viewModel, StudioTab.ACCOUNT_SYNC)
+                }
             )
         }
     }
-}
-
-@Composable
-private fun DrawerMenuItem(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    textMain: Color,
-    textSub: Color,
-    onClick: () -> Unit
-) {
-    NavigationDrawerItem(
-        label = {
-            Column {
-                Text(
-                    text = title,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (selected) OpusRed else textMain
-                )
-                Text(
-                    text = subtitle,
-                    fontSize = 10.sp,
-                    color = textSub,
-                    maxLines = 1
-                )
-            }
-        },
-        icon = {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (selected) OpusRed else textSub,
-                modifier = Modifier.size(20.dp)
-            )
-        },
-        selected = selected,
-        onClick = onClick,
-        colors = NavigationDrawerItemDefaults.colors(
-            selectedContainerColor = OpusRed.copy(alpha = 0.14f),
-            unselectedContainerColor = Color.Transparent
-        )
-    )
 }
 
 @Composable
@@ -820,7 +606,7 @@ fun StudioTopAppBar(
                         .clip(RoundedCornerShape(8.dp))
                         .background(
                             if (accountState.isSignedIn) StudioGreen.copy(alpha = 0.18f)
-                            else if (activeTab == StudioTab.ACCOUNT_SYNC) OpusRed
+                            else if (activeTab == StudioTab.ACCOUNT_SYNC || activeTab == StudioTab.LOGIN) OpusRed
                             else OpusRedLight
                         )
                         .clickable { onSelectAccountSync() }
@@ -837,7 +623,7 @@ fun StudioTopAppBar(
                             contentDescription = "Account & c.ai Sync",
                             tint = when {
                                 accountState.isSignedIn -> StudioGreen
-                                activeTab == StudioTab.ACCOUNT_SYNC -> Color.White
+                                activeTab == StudioTab.ACCOUNT_SYNC || activeTab == StudioTab.LOGIN -> Color.White
                                 else -> OpusRed
                             },
                             modifier = Modifier.size(14.dp)
@@ -852,7 +638,7 @@ fun StudioTopAppBar(
                             fontWeight = FontWeight.Bold,
                             color = when {
                                 accountState.isSignedIn -> StudioGreen
-                                activeTab == StudioTab.ACCOUNT_SYNC -> Color.White
+                                activeTab == StudioTab.ACCOUNT_SYNC || activeTab == StudioTab.LOGIN -> Color.White
                                 else -> OpusRed
                             }
                         )

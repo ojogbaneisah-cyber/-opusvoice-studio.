@@ -622,6 +622,26 @@ fun SettingsScreen(
                                 Text("Sign In with Google (Credential Manager)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
 
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.signInWithAppleFirebase(
+                                        activityContext = context,
+                                        characterHandleInput = accountState.caiLinkedUsername,
+                                        appleIdEmailHint = accountState.emailOrUsername
+                                    )
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = textMain),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .testTag("settings_apple_signin_button")
+                            ) {
+                                Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Sign In with Apple ID (Firebase OAuth)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -637,7 +657,7 @@ fun SettingsScreen(
                                 ) {
                                     Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Apple / c.ai Login", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    Text("c.ai Custom Login", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                 }
 
                                 OutlinedButton(
