@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Sound waves Left -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M27,48 h4 v12 h-4 z" />
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M34,40 h4 v28 h-4 z" />
+
+    <!-- Microphone Capsule Outer Glow / Body -->
+    <path
+        android:pathData="M46,36 C46,30.5 50,26 54,26 C58,26 62,30.5 62,36 L62,54 C62,59.5 58,64 54,64 C50,64 46,59.5 46,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="46"
+                android:startY="26"
+                android:endX="62"
+                android:endY="64"
+                android:type="linear">
+                <item android:color="#38BDF8" android:offset="0.0" />
+                <item android:color="#A855F7" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Microphone Arc Cradle -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M41,48 C41,62 67,62 67,48" />
+
+    <!-- Microphone Stand Stem -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M54,62 L54,76" />
+
+    <!-- Microphone Base -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M44,76 L64,76" />
+
+    <!-- Sound waves Right -->
+    <path
+        android:fillColor="#A855F7"
+        android:pathData="M70,40 h4 v28 h-4 z" />
+    <path
+        android:fillColor="#A855F7"
+        android:pathData="M77,48 h4 v12 h-4 z" />
+</vector>

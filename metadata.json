@@ -1,0 +1,8 @@
+{
+  "name": "Remix OpusVoice Studio",
+  "description": "Mobile audio studio for uploading, recording, waveform trimming, and exporting 48kHz Mono Ogg/Opus and WAV voice notes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
