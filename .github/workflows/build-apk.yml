@@ -5,9 +5,14 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -23,8 +28,14 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Generate Debug Keystore if Missing
+      - name: Accept Android SDK Licenses & Prepare Environment
         run: |
+          if [ -n "$ANDROID_HOME" ] && [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
               base64 -d debug.keystore.base64 > debug.keystore
@@ -34,10 +45,23 @@ jobs:
           fi
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Installable APK
+      - name: Upload Installable APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: OpusVoice-Studio-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish Direct-Download APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: latest
+          name: "OpusVoice Studio Latest APK"
+          body: "Tap **app-debug.apk** below under Assets to download and install directly on your Android phone."
+          files: app/build/outputs/apk/debug/app-debug.apk
+          prerelease: false
+
+
