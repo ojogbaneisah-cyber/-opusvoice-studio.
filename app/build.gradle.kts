@@ -156,3 +156,15 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+val builtDebugApk = file("${projectDir}/build/outputs/apk/debug/app-debug.apk")
+val exportedRootApk = file("${rootDir}/OpusVoice-Studio.apk")
+val exportedPublicApk = file("${rootDir}/public/OpusVoice-Studio.apk")
+
+if (builtDebugApk.exists()) {
+  builtDebugApk.copyTo(exportedRootApk, overwrite = true)
+  exportedPublicApk.parentFile?.mkdirs()
+  builtDebugApk.copyTo(exportedPublicApk, overwrite = true)
+}
+
+
