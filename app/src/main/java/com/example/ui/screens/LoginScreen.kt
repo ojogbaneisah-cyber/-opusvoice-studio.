@@ -67,17 +67,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AuthProvider
 import com.example.ui.StudioViewModel
+import com.example.ui.components.CharacterAiWebViewLoginDialog
 import com.example.ui.theme.OpusLightBorder
 import com.example.ui.theme.OpusLightTextPrimary
 import com.example.ui.theme.OpusLightTextSecondary
 import com.example.ui.theme.OpusRed
 import com.example.ui.theme.OpusWhiteBackground
 import com.example.ui.theme.OpusWhiteSurface
-import com.example.ui.theme.StudioViolet
 import com.example.ui.theme.StudioBackground
 import com.example.ui.theme.StudioCardBorder
 import com.example.ui.theme.StudioGreen
 import com.example.ui.theme.StudioSurface
+import com.example.ui.theme.StudioViolet
 
 @Composable
 fun LoginScreen(
@@ -89,8 +90,9 @@ fun LoginScreen(
     val context = LocalContext.current
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val accountState by viewModel.accountState.collectAsState()
+    val showWebViewLogin by viewModel.showCaiWebViewLogin.collectAsState()
 
-    var selectedProvider by rememberSaveable { mutableStateOf(AuthProvider.GOOGLE_EMAIL) }
+    var selectedProvider by rememberSaveable { mutableStateOf(AuthProvider.CHARACTER_AI) }
     var isRegisterMode by rememberSaveable { mutableStateOf(false) }
     var emailOrUsernameInput by rememberSaveable {
         mutableStateOf(accountState.emailOrUsername.ifBlank { "" })
@@ -107,6 +109,16 @@ fun LoginScreen(
     val borderCol = if (isDarkMode) StudioCardBorder else OpusLightBorder
     val textMain = if (isDarkMode) Color(0xFFF8FAFC) else OpusLightTextPrimary
     val textSub = if (isDarkMode) Color(0xFF94A3B8) else OpusLightTextSecondary
+
+    if (showWebViewLogin) {
+        CharacterAiWebViewLoginDialog(
+            onDismiss = { viewModel.closeCaiWebViewLogin() },
+            onTokenExtracted = { token, cookies ->
+                passwordInput = token
+                viewModel.onCaiWebViewTokenCaptured(token, cookies)
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -160,7 +172,7 @@ fun LoginScreen(
                         Column {
                             Text(
                                 text = if (accountState.isSignedIn) {
-                                    "Authenticated: ${accountState.displayName}"
+                                    "Authenticated: ${accountState.displayName} (${accountState.caiLinkedUsername})"
                                 } else {
                                     "Firebase Cloud & Character.AI Sign-In"
                                 },
@@ -169,7 +181,7 @@ fun LoginScreen(
                                 color = textMain
                             )
                             Text(
-                                text = accountState.cloudSyncStatus,
+                                text = "${accountState.caiTokenStatusText} • ${accountState.cloudSyncStatus}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (accountState.isSignedIn) StudioGreen else textSub,
                                 fontSize = 11.sp
@@ -209,7 +221,7 @@ fun LoginScreen(
                             )
                             Column {
                                 Text(
-                                    text = "Synced Character: ${accountState.activeCharacter.name}",
+                                    text = "Character: ${accountState.activeCharacter.name} • Persona: ${accountState.activePersona.name}",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = textMain
@@ -296,11 +308,7 @@ fun LoginScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (accountState.firebaseUid.isNotBlank()) {
-                            "Re-Sync Google Account & Cloud Profile"
-                        } else {
-                            "Continue with Google (Credential Manager)"
-                        },
+                        text = "Continue with Google (Credential Manager)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
                     )
@@ -348,7 +356,7 @@ fun LoginScreen(
             }
         }
 
-        // Section 2: Email/Password, Character.AI & Apple ID Credentials Form
+        // Section 2: Email / Password & Provider Sign-In -> c.ai Direct Sync
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -428,6 +436,60 @@ fun LoginScreen(
                     }
                 }
 
+                // PRIMARY BUTTON AT TOP: 1-Tap Sign In with Character.AI (WebView)
+                Button(
+                    onClick = {
+                        selectedProvider = AuthProvider.CHARACTER_AI
+                        viewModel.openCaiWebViewLogin()
+                    },
+                    enabled = !accountState.isSyncing,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("login_cai_webview_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = OpusRed,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "1-Tap Sign In with Character.AI (WebView)",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp
+                    )
+                }
+
+                OutlinedTextField(
+                    value = passwordInput,
+                    onValueChange = { passwordInput = it },
+                    label = { Text("c.ai Session Token") },
+                    placeholder = { Text("Manual c.ai Session Token (Backup Option)") },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Lock, contentDescription = null)
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                imageVector = if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showPassword) "Hide token" else "Show token"
+                            )
+                        }
+                    },
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("login_password_input")
+                )
+
                 OutlinedTextField(
                     value = emailOrUsernameInput,
                     onValueChange = { emailOrUsernameInput = it },
@@ -440,7 +502,7 @@ fun LoginScreen(
                             }
                         )
                     },
-                    placeholder = { Text("creator@example.com or @aria_vance") },
+                    placeholder = { Text("kevofromitaly10 or creator@example.com") },
                     leadingIcon = {
                         Icon(imageVector = Icons.Default.Person, contentDescription = null)
                     },
@@ -449,30 +511,6 @@ fun LoginScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("login_email_input")
-                )
-
-                OutlinedTextField(
-                    value = passwordInput,
-                    onValueChange = { passwordInput = it },
-                    label = { Text("Password or c.ai Session Token") },
-                    placeholder = { Text("Enter password") },
-                    leadingIcon = {
-                        Icon(imageVector = Icons.Default.Lock, contentDescription = null)
-                    },
-                    trailingIcon = {
-                        IconButton(onClick = { showPassword = !showPassword }) {
-                            Icon(
-                                imageVector = if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showPassword) "Hide password" else "Show password"
-                            )
-                        }
-                    },
-                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("login_password_input")
                 )
 
                 OutlinedTextField(
@@ -543,7 +581,7 @@ fun LoginScreen(
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Text(
-                            text = "Manage Synced Personas",
+                            text = "Manage Synced Personas (${accountState.syncedPersonas.size})",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
                         )

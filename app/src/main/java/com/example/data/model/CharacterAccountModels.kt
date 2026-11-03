@@ -1,6 +1,9 @@
 package com.example.data.model
 
 import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.example.audio.OpusContainerTarget
 import com.example.audio.StudioAudioSource
 import org.json.JSONArray
@@ -27,6 +30,21 @@ enum class CaiLaunchMode(val label: String, val description: String) {
     )
 }
 
+enum class CharacterVisibility(val label: String) {
+    PUBLIC("Public"),
+    UNLISTED("Unlisted"),
+    PRIVATE("Private")
+}
+
+data class SyncedUserPersona(
+    val personaId: String,
+    val name: String,
+    val handle: String,
+    val definition: String,
+    val avatarUrl: String = "",
+    val isDefault: Boolean = false
+)
+
 data class SyncedCharacterProfile(
     val characterId: String,
     val name: String,
@@ -38,7 +56,20 @@ data class SyncedCharacterProfile(
     val voiceProfileName: String,
     val pitchMultiplier: Float = 1.0f,
     val speedMultiplier: Float = 1.0f,
-    val recommendedHoldoffMs: Int = 950
+    val recommendedHoldoffMs: Int = 950,
+    val avatarUrl: String = "",
+    val definition: String = "",
+    val visibility: CharacterVisibility = CharacterVisibility.PUBLIC,
+    val hasLorebook: Boolean = false,
+    val lorebookEntriesCount: Int = 0
+)
+
+data class CaiTurnMessage(
+    val turnId: String,
+    val authorName: String,
+    val isUser: Boolean,
+    val text: String,
+    val timestampMs: Long = System.currentTimeMillis()
 )
 
 data class UserAccountState(
@@ -48,16 +79,24 @@ data class UserAccountState(
     val displayName: String = "",
     val emailOrUsername: String = "",
     val caiLinkedUsername: String = "",
+    val hasCaiSessionToken: Boolean = false,
+    val caiTokenStatusText: String = "No c.ai Session Token stored",
     val lastSyncTimestamp: String = "Not synced yet",
     val cloudSyncStatus: String = "Sign in to sync with Firebase Cloud",
     val isSyncing: Boolean = false,
     val authErrorMessage: String? = null,
     val syncedCharacters: List<SyncedCharacterProfile> = defaultStarterCharacters(),
-    val activeCharacterId: String = "cai_aria_01"
+    val activeCharacterId: String = "cai_aria_01",
+    val syncedPersonas: List<SyncedUserPersona> = defaultStarterPersonas(),
+    val activePersonaId: String = "persona_default_01"
 ) {
     val activeCharacter: SyncedCharacterProfile
         get() = syncedCharacters.firstOrNull { it.characterId == activeCharacterId }
             ?: syncedCharacters.first()
+
+    val activePersona: SyncedUserPersona
+        get() = syncedPersonas.firstOrNull { it.personaId == activePersonaId }
+            ?: syncedPersonas.first()
 }
 
 data class StudioSettingsConfig(
@@ -81,6 +120,30 @@ data class StudioSettingsConfig(
     val googleChatIntegrationEnabled: Boolean = true
 )
 
+fun defaultStarterPersonas(): List<SyncedUserPersona> = listOf(
+    SyncedUserPersona(
+        personaId = "persona_default_01",
+        name = "Studio Caller (Default)",
+        handle = "@studio_caller",
+        definition = "Thoughtful, articulate voice caller speaking clearly over a 48kHz Mono broadcast line.",
+        isDefault = true
+    ),
+    SyncedUserPersona(
+        personaId = "persona_night_owl_02",
+        name = "Late-Night Confidant",
+        handle = "@night_owl",
+        definition = "Relaxed, candid late-night caller looking for deep conversation, dry humor, and creative brainstorming.",
+        isDefault = false
+    ),
+    SyncedUserPersona(
+        personaId = "persona_producer_03",
+        name = "Audio Producer & Strategist",
+        handle = "@sound_director",
+        definition = "Direct, analytical sound engineer and narrative strategist testing real-time voice interaction.",
+        isDefault = false
+    )
+)
+
 fun defaultStarterCharacters(): List<SyncedCharacterProfile> = listOf(
     SyncedCharacterProfile(
         characterId = "cai_aria_01",
@@ -93,7 +156,11 @@ fun defaultStarterCharacters(): List<SyncedCharacterProfile> = listOf(
         voiceProfileName = "Aoede Velvet (48kHz c.ai Voice)",
         pitchMultiplier = 1.02f,
         speedMultiplier = 1.0f,
-        recommendedHoldoffMs = 950
+        recommendedHoldoffMs = 950,
+        definition = "{{char}}: Hey! Can you hear me alright? I'm glad you called.\n{{user}}: Loud and clear.",
+        visibility = CharacterVisibility.PUBLIC,
+        hasLorebook = true,
+        lorebookEntriesCount = 4
     ),
     SyncedCharacterProfile(
         characterId = "cai_julian_02",
@@ -106,7 +173,11 @@ fun defaultStarterCharacters(): List<SyncedCharacterProfile> = listOf(
         voiceProfileName = "Fenrir Baritone (48kHz c.ai Voice)",
         pitchMultiplier = 0.94f,
         speedMultiplier = 0.98f,
-        recommendedHoldoffMs = 900
+        recommendedHoldoffMs = 900,
+        definition = "{{char}}: Let's cut through the noise and focus on what matters.",
+        visibility = CharacterVisibility.UNLISTED,
+        hasLorebook = true,
+        lorebookEntriesCount = 6
     ),
     SyncedCharacterProfile(
         characterId = "cai_kael_03",
@@ -119,7 +190,11 @@ fun defaultStarterCharacters(): List<SyncedCharacterProfile> = listOf(
         voiceProfileName = "Puck Dynamic (48kHz c.ai Voice)",
         pitchMultiplier = 1.0f,
         speedMultiplier = 1.04f,
-        recommendedHoldoffMs = 850
+        recommendedHoldoffMs = 850,
+        definition = "{{char}}: Signal-to-noise ratio is looking clean tonight.",
+        visibility = CharacterVisibility.PRIVATE,
+        hasLorebook = true,
+        lorebookEntriesCount = 8
     ),
     SyncedCharacterProfile(
         characterId = "cai_seraphina_04",
@@ -132,12 +207,62 @@ fun defaultStarterCharacters(): List<SyncedCharacterProfile> = listOf(
         voiceProfileName = "Kore Soft Studio (48kHz c.ai Voice)",
         pitchMultiplier = 1.05f,
         speedMultiplier = 0.96f,
-        recommendedHoldoffMs = 1050
+        recommendedHoldoffMs = 1050,
+        definition = "{{char}}: Every voice carries a story waiting to be heard.",
+        visibility = CharacterVisibility.PUBLIC,
+        hasLorebook = false,
+        lorebookEntriesCount = 0
     )
 )
 
 class StudioPreferencesManager(context: Context) {
-    private val prefs = context.getSharedPreferences("opus_voice_studio_prefs", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("opus_voice_studio_prefs", Context.MODE_PRIVATE)
+
+    private val encryptedPrefs: SharedPreferences by lazy {
+        try {
+            val masterKey = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                appContext,
+                "opus_voice_cai_secure_prefs",
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            appContext.getSharedPreferences("opus_voice_cai_secure_fallback", Context.MODE_PRIVATE)
+        }
+    }
+
+    fun saveEncryptedCaiCredentials(token: String, cookieHeader: String = "") {
+        val cleanToken = token
+            .removePrefix("Token ")
+            .removePrefix("Bearer ")
+            .trim()
+        encryptedPrefs.edit()
+            .putString("cai_auth_token", cleanToken)
+            .putString("cai_cookie_header", cookieHeader.trim())
+            .putLong("cai_token_saved_at", System.currentTimeMillis())
+            .apply()
+    }
+
+    fun loadEncryptedCaiToken(): String {
+        return encryptedPrefs.getString("cai_auth_token", "")?.trim() ?: ""
+    }
+
+    fun loadEncryptedCaiCookies(): String {
+        return encryptedPrefs.getString("cai_cookie_header", "")?.trim() ?: ""
+    }
+
+    fun clearEncryptedCaiCredentials() {
+        encryptedPrefs.edit()
+            .remove("cai_auth_token")
+            .remove("cai_cookie_header")
+            .remove("cai_token_saved_at")
+            .apply()
+    }
 
     fun loadSettings(): StudioSettingsConfig {
         val launchModeName = prefs.getString("cai_launch_mode", CaiLaunchMode.NATIVE_APP_DIRECT.name)
@@ -214,12 +339,29 @@ class StudioPreferencesManager(context: Context) {
         val cloudStatus = prefs.getString("acct_cloud_status", "Sign in to sync with Firebase Cloud")
             ?: "Sign in to sync with Firebase Cloud"
         val activeCharId = prefs.getString("acct_active_char_id", "cai_aria_01") ?: "cai_aria_01"
+        val activePersonaId = prefs.getString("acct_active_persona_id", "persona_default_01") ?: "persona_default_01"
+
+        val savedToken = loadEncryptedCaiToken()
+        val hasToken = savedToken.isNotBlank()
+        val tokenStatus = if (hasToken) {
+            val preview = if (savedToken.length > 10) "${savedToken.take(6)}...${savedToken.takeLast(4)}" else "Active"
+            "Encrypted Token Active ($preview)"
+        } else {
+            "No c.ai Session Token stored"
+        }
 
         val charactersJson = prefs.getString("acct_synced_chars_json", null)
         val syncedList = if (!charactersJson.isNullOrBlank()) {
             parseCharactersJson(charactersJson).ifEmpty { defaultStarterCharacters() }
         } else {
             defaultStarterCharacters()
+        }
+
+        val personasJson = prefs.getString("acct_synced_personas_json", null)
+        val personasList = if (!personasJson.isNullOrBlank()) {
+            parsePersonasJson(personasJson).ifEmpty { defaultStarterPersonas() }
+        } else {
+            defaultStarterPersonas()
         }
 
         return UserAccountState(
@@ -229,11 +371,15 @@ class StudioPreferencesManager(context: Context) {
             displayName = displayName,
             emailOrUsername = emailOrUser,
             caiLinkedUsername = caiUser,
+            hasCaiSessionToken = hasToken,
+            caiTokenStatusText = tokenStatus,
             lastSyncTimestamp = lastSync,
             cloudSyncStatus = cloudStatus,
             isSyncing = false,
             syncedCharacters = syncedList,
-            activeCharacterId = activeCharId
+            activeCharacterId = activeCharId,
+            syncedPersonas = personasList,
+            activePersonaId = activePersonaId
         )
     }
 
@@ -248,7 +394,9 @@ class StudioPreferencesManager(context: Context) {
             .putString("acct_last_sync", state.lastSyncTimestamp)
             .putString("acct_cloud_status", state.cloudSyncStatus)
             .putString("acct_active_char_id", state.activeCharacterId)
+            .putString("acct_active_persona_id", state.activePersonaId)
             .putString("acct_synced_chars_json", serializeCharactersJson(state.syncedCharacters))
+            .putString("acct_synced_personas_json", serializePersonasJson(state.syncedPersonas))
             .apply()
     }
 
@@ -267,6 +415,11 @@ class StudioPreferencesManager(context: Context) {
                 put("pitchMultiplier", c.pitchMultiplier.toDouble())
                 put("speedMultiplier", c.speedMultiplier.toDouble())
                 put("recommendedHoldoffMs", c.recommendedHoldoffMs)
+                put("avatarUrl", c.avatarUrl)
+                put("definition", c.definition)
+                put("visibility", c.visibility.name)
+                put("hasLorebook", c.hasLorebook)
+                put("lorebookEntriesCount", c.lorebookEntriesCount)
             }
             arr.put(obj)
         }
@@ -279,6 +432,9 @@ class StudioPreferencesManager(context: Context) {
             val result = mutableListOf<SyncedCharacterProfile>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
+                val visStr = o.optString("visibility", CharacterVisibility.PUBLIC.name)
+                val visibility = CharacterVisibility.entries.firstOrNull { it.name == visStr }
+                    ?: CharacterVisibility.PUBLIC
                 result.add(
                     SyncedCharacterProfile(
                         characterId = o.optString("characterId", "cai_custom_$i"),
@@ -291,7 +447,51 @@ class StudioPreferencesManager(context: Context) {
                         voiceProfileName = o.optString("voiceProfileName", "Aoede 48kHz Voice"),
                         pitchMultiplier = o.optDouble("pitchMultiplier", 1.0).toFloat(),
                         speedMultiplier = o.optDouble("speedMultiplier", 1.0).toFloat(),
-                        recommendedHoldoffMs = o.optInt("recommendedHoldoffMs", 950)
+                        recommendedHoldoffMs = o.optInt("recommendedHoldoffMs", 950),
+                        avatarUrl = o.optString("avatarUrl", ""),
+                        definition = o.optString("definition", ""),
+                        visibility = visibility,
+                        hasLorebook = o.optBoolean("hasLorebook", false),
+                        lorebookEntriesCount = o.optInt("lorebookEntriesCount", 0)
+                    )
+                )
+            }
+            result
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun serializePersonasJson(list: List<SyncedUserPersona>): String {
+        val arr = JSONArray()
+        list.forEach { p ->
+            val obj = JSONObject().apply {
+                put("personaId", p.personaId)
+                put("name", p.name)
+                put("handle", p.handle)
+                put("definition", p.definition)
+                put("avatarUrl", p.avatarUrl)
+                put("isDefault", p.isDefault)
+            }
+            arr.put(obj)
+        }
+        return arr.toString()
+    }
+
+    private fun parsePersonasJson(raw: String): List<SyncedUserPersona> {
+        return try {
+            val arr = JSONArray(raw)
+            val result = mutableListOf<SyncedUserPersona>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                result.add(
+                    SyncedUserPersona(
+                        personaId = o.optString("personaId", "persona_$i"),
+                        name = o.optString("name", "Studio Caller"),
+                        handle = o.optString("handle", "@caller"),
+                        definition = o.optString("definition", ""),
+                        avatarUrl = o.optString("avatarUrl", ""),
+                        isDefault = o.optBoolean("isDefault", i == 0)
                     )
                 )
             }

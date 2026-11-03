@@ -80,6 +80,7 @@ import com.example.data.model.AVAILABLE_VOICES
 import com.example.ui.CaiCallSection
 import com.example.ui.StudioTab
 import com.example.ui.StudioViewModel
+import com.example.ui.components.AuthenticatedCaiCallWebViewCard
 import com.example.ui.theme.OpusLightBorder
 import com.example.ui.theme.OpusLightTextPrimary
 import com.example.ui.theme.OpusLightTextSecondary
@@ -341,6 +342,125 @@ fun CharacterAiCallScreen(
                                 }
                             }
 
+                            // Active Synced User Persona Strip & Quick Switcher
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(bgSurface)
+                                    .border(1.dp, borderCol, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "ACTIVE PERSONA: ${accountState.activePersona.name} (${accountState.activePersona.handle})",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = StudioGreen
+                                    )
+                                    Text(
+                                        text = "wss://neo.character.ai/ws/",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = textSub
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    accountState.syncedPersonas.forEach { persona ->
+                                        val isActivePersona = persona.personaId == accountState.activePersona.personaId
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (isActivePersona) OpusRed else bgCard)
+                                                .border(
+                                                    1.dp,
+                                                    if (isActivePersona) OpusRed else borderCol,
+                                                    RoundedCornerShape(8.dp)
+                                                )
+                                                .clickable { viewModel.selectActiveUserPersona(persona) }
+                                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                                                .testTag("cai_call_persona_chip_${persona.personaId}")
+                                        ) {
+                                            Text(
+                                                text = if (isActivePersona) "✓ ${persona.name}" else persona.name,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isActivePersona) Color.White else textMain
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Authenticated C.AI Call WebView Toggle (Shared Cookies + 48kHz Chime-Blocker Pipeline)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(bgSurface)
+                                    .border(
+                                        1.dp,
+                                        if (callState.authenticatedWebViewEnabled) StudioGreen else borderCol,
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = "Authenticated C.AI Call WebView",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (callState.authenticatedWebViewEnabled) StudioGreen else textMain
+                                    )
+                                    Text(
+                                        text = "Loads official Character.AI call/voice interface with shared cookies & 48kHz Chime-Blocker DSP",
+                                        fontSize = 10.sp,
+                                        color = textSub
+                                    )
+                                }
+                                Switch(
+                                    checked = callState.authenticatedWebViewEnabled,
+                                    onCheckedChange = { viewModel.toggleAuthenticatedCallWebView(it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = StudioGreen
+                                    ),
+                                    modifier = Modifier.testTag("cai_authenticated_webview_switch")
+                                )
+                            }
+
+                            if (callState.authenticatedWebViewEnabled) {
+                                AuthenticatedCaiCallWebViewCard(
+                                    character = accountState.activeCharacter,
+                                    savedToken = viewModel.getSavedCaiSessionToken(),
+                                    savedCookies = viewModel.getSavedCaiCookies(),
+                                    holdoffWindowMs = callState.postSpeechMuteWindowMs,
+                                    spectralNotchEnabled = callState.spectralNotchEnabled,
+                                    isDark = isDark,
+                                    borderCol = borderCol,
+                                    onArmDspBridge = {
+                                        if (!chimeStats.isServiceRunning) {
+                                            viewModel.toggleChimeInterceptorService()
+                                        }
+                                    }
+                                )
+                            }
+
                             // Live Call Audio Visualizer
                             val activeWaveAmps = when {
                                 callState.isListeningToCaller && liveMicAmps.isNotEmpty() -> liveMicAmps
@@ -397,7 +517,7 @@ fun CharacterAiCallScreen(
                                 )
                             }
 
-                            // Live Transcript / Last Exchange Display
+                            // Live Transcript / Last Exchange Display + Neo WebSocket Turn Feed
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -408,7 +528,7 @@ fun CharacterAiCallScreen(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    text = "OTHER PERSON ON CALL SAID:",
+                                    text = "OTHER PERSON ON CALL (${accountState.activePersona.name.uppercase()}) SAID:",
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = textSub
@@ -437,6 +557,35 @@ fun CharacterAiCallScreen(
                                     color = textMain,
                                     fontWeight = FontWeight.SemiBold
                                 )
+
+                                if (callState.liveChatTurns.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "RECENT C.AI NEO WEBSOCKET TURNS (${callState.liveChatTurns.size}):",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = StudioGreen
+                                    )
+                                    callState.liveChatTurns.takeLast(4).forEach { turn ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${turn.authorName}:",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (turn.isUser) StudioGreen else OpusRed
+                                            )
+                                            Text(
+                                                text = turn.text,
+                                                fontSize = 10.sp,
+                                                color = textMain,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             // Primary Call Controls Deck
@@ -561,7 +710,7 @@ fun CharacterAiCallScreen(
                                 }
                             }
 
-                            // Quick Text-to-Call Input
+                            // Quick Text-to-Call Input (Streams via wss://neo.character.ai/ws/)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -570,7 +719,7 @@ fun CharacterAiCallScreen(
                                 OutlinedTextField(
                                     value = callerPromptInput,
                                     onValueChange = { callerPromptInput = it },
-                                    placeholder = { Text("Enter what the caller said (or character line)...", fontSize = 12.sp) },
+                                    placeholder = { Text("Message ${callState.characterName} via c.ai Neo WebSocket...", fontSize = 12.sp) },
                                     singleLine = true,
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedContainerColor = bgSurface,

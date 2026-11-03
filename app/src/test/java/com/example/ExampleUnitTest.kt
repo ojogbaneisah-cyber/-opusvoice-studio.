@@ -185,5 +185,30 @@ class ExampleUnitTest {
             com.example.audio.MessengerTarget.GOOGLE_CHAT.preferredContainer
         )
     }
+
+    @Test
+    fun `character ai webview helper and api client extract and format session token`() {
+        val cookieString = "cf_clearance=xyz123; HTTP_AUTHORIZATION=Token%209876543210abcdef9876543210abcdef; sessionid=abc"
+        val extractedFromCookie = com.example.ui.components.extractCaiTokenFromCookies(cookieString)
+        assertEquals("9876543210abcdef9876543210abcdef", extractedFromCookie)
+
+        val apiClient = com.example.data.cai.CharacterAiApiClient()
+        assertEquals(
+            "Token 9876543210abcdef9876543210abcdef",
+            apiClient.buildAuthHeader("Bearer 9876543210abcdef9876543210abcdef")
+        )
+    }
+
+    @Test
+    fun `default starter characters include public unlisted and private with lorebooks`() {
+        val chars = com.example.data.model.defaultStarterCharacters()
+        assertTrue(chars.any { it.visibility == com.example.data.model.CharacterVisibility.PUBLIC })
+        assertTrue(chars.any { it.visibility == com.example.data.model.CharacterVisibility.PRIVATE && it.hasLorebook })
+        assertTrue(chars.any { it.visibility == com.example.data.model.CharacterVisibility.UNLISTED && it.hasLorebook })
+
+        val personas = com.example.data.model.defaultStarterPersonas()
+        assertTrue(personas.size >= 3)
+    }
 }
+
 
